@@ -145,9 +145,16 @@ const formatRateTypeLabel = (value?: string) => {
   if (!value) return '-';
   return value.replace(/_/g, '/').replace('LOOSE', 'Loose').replace('WB', 'WB');
 };
+const formatRateUnitLabel = (value?: string) => value === 'per_quintal'
+  ? 'Per Quintal'
+  : value === 'per_kg'
+    ? 'Per Kg'
+    : value === 'per_ton'
+      ? 'Per Ton'
+      : 'Per Bag';
 const formatSuteUnitLabel = (value?: string) => value === 'per_bag' ? 'Per Bag' : 'Per Ton';
 const formatChargeUnitLabel = (value?: string) => value === 'per_quintal'
-  ? 'Per Qtl'
+  ? 'Per Quintal'
   : value === 'percentage'
     ? 'Percent'
     : value === 'lumps'
@@ -156,7 +163,14 @@ const formatChargeUnitLabel = (value?: string) => value === 'per_quintal'
         ? 'Per Bag'
         : value === 'per_kg'
           ? 'Per Kg'
-          : 'Amount';
+          : value === 'per_ton'
+            ? 'Per Ton'
+            : 'Amount';
+const formatRsWithUnitLabel = (value: any, unit?: string) => {
+  if (!hasValue(value)) return 'Pending';
+  const unitLabel = formatChargeUnitLabel(unit);
+  return `Rs ${formatIndianCurrency(value)}${unitLabel && unitLabel !== 'Amount' ? ` / ${unitLabel.replace(/^Per /, '')}` : ''}`;
+};
 const hasValue = (value: any) => value !== null && value !== undefined && value !== '';
 const sanitizeMoistureInput = (value: string) => {
   const cleaned = value.replace(/[^0-9.]/g, '');
@@ -446,6 +460,16 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
       paymentConditionUnit: o.paymentConditionUnit || 'days'
     });
     setShowModal(true);
+  };
+
+  const handleOpenQualityPopup = (entry: SampleEntry) => {
+    const qualityAttempts = Array.isArray(entry.qualityAttemptDetails) ? entry.qualityAttemptDetails : [];
+    const hasQualityData = qualityAttempts.length > 0 || !!entry.qualityParameters?.reportedBy || !!entry.qualityParameters?.id;
+    if (!hasQualityData) {
+      showNotification('Quality parameters are not available for this lot yet.', 'error');
+      return;
+    }
+    setQualityHistoryModal({ open: true, entry });
   };
 
   const handleOpenOfferEdit = (entry: SampleEntry) => {
@@ -824,6 +848,15 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   const modalRateType = managerData.baseRateType || modalOffering.baseRateType || 'PD_LOOSE';
   const modalHasLf = hasLfForRateType(modalRateType);
   const modalHasEgb = hasEgbForRateType(modalRateType);
+  const modalBaseRateUnit = modalOffering.baseRateUnit || 'per_bag';
+  const modalSuteUnit = managerData.suteUnit || modalOffering.finalSuteUnit || modalOffering.suteUnit;
+  const modalHamaliUnit = managerData.hamaliUnit || modalOffering.hamaliUnit || 'per_bag';
+  const modalBrokerageUnit = managerData.brokerageUnit || modalOffering.brokerageUnit || 'per_bag';
+  const modalLfUnit = managerData.lfUnit || modalOffering.lfUnit || 'per_bag';
+  const modalCdUnit = managerData.cdUnit || modalOffering.cdUnit || 'percentage';
+  const modalBankLoanUnit = managerData.bankLoanUnit || modalOffering.bankLoanUnit || 'per_bag';
+  const modalPaymentUnit = managerData.paymentConditionUnit || modalOffering.paymentConditionUnit || 'days';
+  const modalPaymentEnabled = modalOffering.paymentConditionEnabled != null ? !!modalOffering.paymentConditionEnabled : !!managerData.paymentConditionEnabled;
   const modalSuteMissing = !!selectedEntry && modalOffering.suteEnabled === false && !parseFloat(modalOffering.finalSute ?? '') && !parseFloat(modalOffering.sute ?? '');
   const modalMoistureMissing = !!selectedEntry && modalOffering.moistureEnabled === false && !parseFloat(modalOffering.moistureValue ?? '');
   const modalHamaliMissing = !!selectedEntry && modalOffering.hamaliEnabled === false && !hasValue(modalOffering.hamali ?? modalOffering.hamaliPerKg);
@@ -831,18 +864,18 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   const modalLfMissing = !!selectedEntry && modalHasLf && modalOffering.lfEnabled === false && !parseFloat(modalOffering.lf ?? '');
   const modalCdMissing = !!selectedEntry && !!modalOffering.cdEnabled && !parseFloat(modalOffering.cdValue ?? '');
   const modalBankLoanMissing = !!selectedEntry && !!modalOffering.bankLoanEnabled && !parseFloat(modalOffering.bankLoanValue ?? '');
-  const modalPaymentMissing = !!selectedEntry && !!managerData.paymentConditionEnabled && !parseInt(modalOffering.paymentConditionValue ?? '', 10);
+  const modalPaymentMissing = !!selectedEntry && modalPaymentEnabled && !parseInt(modalOffering.paymentConditionValue ?? '', 10);
   const modalEgbMissing = !!selectedEntry && modalHasEgb && modalOffering.egbType === 'purchase' && !parseFloat(modalOffering.egbValue ?? '');
   const modalMissingFields = [
-    modalSuteMissing ? 'Sute' : '',
-    modalMoistureMissing ? 'Moisture' : '',
-    modalHamaliMissing ? 'Hamali' : '',
-    modalBrokerageMissing ? 'Brokerage' : '',
-    modalLfMissing ? 'LF' : '',
-    modalCdMissing ? 'CD' : '',
-    modalBankLoanMissing ? 'Bank Loan' : '',
-    modalPaymentMissing ? 'Payment' : '',
-    modalEgbMissing ? 'EGB' : ''
+    modalSuteMissing ? `Sute (${formatSuteUnitLabel(modalSuteUnit)})` : '',
+    modalMoistureMissing ? 'Moisture (%)' : '',
+    modalHamaliMissing ? `Hamali (${formatChargeUnitLabel(modalHamaliUnit)})` : '',
+    modalBrokerageMissing ? `Brokerage (${formatChargeUnitLabel(modalBrokerageUnit)})` : '',
+    modalLfMissing ? `LF (${formatChargeUnitLabel(modalLfUnit)})` : '',
+    modalCdMissing ? `CD (${modalCdUnit === 'percentage' ? 'Percent' : 'Lumps'})` : '',
+    modalBankLoanMissing ? `Bank Loan (${formatChargeUnitLabel(modalBankLoanUnit)})` : '',
+    modalPaymentMissing ? `Payment (${modalPaymentUnit === 'month' ? 'Month' : 'Days'})` : '',
+    modalEgbMissing ? `EGB (${modalOffering.egbType === 'purchase' ? 'Purchase' : 'Mill'})` : ''
   ].filter(Boolean);
   const modalCardStyle: React.CSSProperties = { borderRadius: '8px', padding: '10px', border: '1px solid #d7e1ea', background: '#f8fafc', minWidth: 0 };
   const modalEditableCardStyle: React.CSSProperties = { ...modalCardStyle, border: '1px solid #f5c542', background: '#fffdf3' };
@@ -850,6 +883,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   const modalMetaStyle: React.CSSProperties = { fontSize: '10px', color: '#64748b', fontWeight: 600, marginBottom: '6px' };
   const modalReadonlyValueStyle: React.CSSProperties = { minHeight: '34px', borderRadius: '6px', border: '1px solid #d0d7de', background: '#eef2f7', padding: '7px 9px', fontSize: '12px', color: '#334155', display: 'flex', alignItems: 'center', fontWeight: 600 };
   const modalInputStyle: React.CSSProperties = { width: '100%', padding: '7px 9px', border: '1px solid #3498db', borderRadius: '6px', fontSize: '12px', boxSizing: 'border-box', background: '#fff' };
+  const modalInlineSelectStyle: React.CSSProperties = { width: '110px', padding: '7px 9px', border: '1px solid #3498db', borderRadius: '6px', fontSize: '12px', background: '#fff' };
   const modalTagStyle = (editable: boolean): React.CSSProperties => ({ display: 'inline-flex', alignItems: 'center', fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '999px', marginBottom: '6px', background: editable ? '#fff3cd' : '#dbeafe', color: editable ? '#8a6400' : '#1d4ed8' });
 
   return (
@@ -961,9 +995,10 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                               const o = entry.offering || {};
                               const hasLf = hasLfForRateType(o.baseRateType);
                               const hasEgb = hasEgbForRateType(o.baseRateType);
+                              const effectiveHamaliValue = o.hamali ?? o.hamaliPerKg;
                               const suteMissing = o.suteEnabled === false && !parseFloat(o.finalSute) && !parseFloat(o.sute);
                               const mstMissing = o.moistureEnabled === false && !parseFloat(o.moistureValue);
-                              const hamaliMissing = o.hamaliEnabled === false && !parseFloat(o.hamali);
+                              const hamaliMissing = o.hamaliEnabled === false && !hasValue(effectiveHamaliValue);
                               const bkrgMissing = o.brokerageEnabled === false && !parseFloat(o.brokerage);
                               const lfMissing = hasLf && o.lfEnabled === false && !parseFloat(o.lf);
                               const cdMissing = !!o.cdEnabled && !parseFloat(o.cdValue);
@@ -973,9 +1008,9 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                               const missingFieldLabels = [
                                 suteMissing ? 'Sute' : '',
                                 mstMissing ? 'Moist' : '',
-                                bkrgMissing ? 'Bkrg' : '',
-                                lfMissing ? 'LF' : '',
-                                hamaliMissing ? 'Hamali' : '',
+                                bkrgMissing ? `Brokerage (${formatChargeUnitLabel(o.brokerageUnit)})` : '',
+                                lfMissing ? `LF (${formatChargeUnitLabel(o.lfUnit)})` : '',
+                                hamaliMissing ? `Hamali (${formatChargeUnitLabel(o.hamaliUnit)})` : '',
                                 cdMissing ? 'CD' : '',
                                 bankLoanMissing ? 'BL' : '',
                                 paymentMissing ? 'Payment' : ''
@@ -1128,7 +1163,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                         <button
                                           type="button"
-                                          onClick={() => hasQualityReport && handleUpdateClick(entry)}
+                                          onClick={() => hasQualityReport && handleOpenQualityPopup(entry)}
                                           style={{ background: 'transparent', border: 'none', color: '#1565c0', textDecoration: hasQualityReport ? 'underline' : 'none', cursor: hasQualityReport ? 'pointer' : 'default', fontWeight: 700, fontSize: '14px', padding: 0, textAlign: 'left' }}
                                         >
                                           {partyLabel}
@@ -1148,7 +1183,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                     <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left', fontSize: '14px' }}>{finalRateValue ? <div><div style={{ fontWeight: 700, fontSize: '14px', color: '#2c3e50' }}>Rs {finalRateValue}<span style={{ fontSize: '10px', color: '#666' }}>{finalRateUnit}</span></div><div style={{ fontSize: '9px', color: '#888', fontWeight: 500 }}>{o.baseRateType?.replace('_', '/') || ''}</div>{o.egbValue != null && o.egbValue > 0 && <div style={{ fontSize: '9px', color: '#e67e22', fontWeight: 600 }}>EGB: {o.egbValue}</div>}</div> : '-'}</td>
                                     <td style={cellStyle(suteMissing)}>{suteMissing ? 'Need' : fmtVal(o.finalSute ?? o.sute, o.finalSuteUnit ?? o.suteUnit)}</td>
                                     <td style={cellStyle(mstMissing)}>{mstMissing ? 'Need' : (o.moistureValue != null ? `${o.moistureValue}%` : '-')}</td>
-                                    <td style={cellStyle(hamaliMissing)}>{hamaliMissing ? 'Need' : (o.hamali || o.hamaliPerKg ? fmtVal(o.hamali || o.hamaliPerKg, o.hamaliUnit) : o.hamaliEnabled === false ? 'Pending' : '-')}</td>
+                                    <td style={cellStyle(hamaliMissing)}>{hamaliMissing ? 'Need' : (hasValue(effectiveHamaliValue) ? fmtVal(effectiveHamaliValue, o.hamaliUnit) : o.hamaliEnabled === false ? 'Pending' : '-')}</td>
                                     <td style={cellStyle(bkrgMissing)}>{bkrgMissing ? 'Need' : (o.brokerage ? fmtVal(o.brokerage, o.brokerageUnit) : o.brokerageEnabled === false ? 'Pending' : '-')}</td>
                                     <td style={cellStyle(lfMissing)}>{lfMissing ? 'Need' : (o.lf ? fmtVal(o.lf, o.lfUnit) : o.lfEnabled === false ? 'Pending' : '-')}</td>
                                     <td style={{ border: '1px solid #000', padding: '6px', textAlign: 'center' }}><div><span style={{ padding: '2px 6px', borderRadius: '10px', fontSize: '10px', fontWeight: 700, background: '#d4edda', color: '#155724', whiteSpace: 'nowrap', display: 'inline-block', marginBottom: '2px', border: '1px solid #c3e6cb' }}>Admin Added</span></div><div><span style={{ padding: '2px 6px', borderRadius: '10px', fontSize: '10px', fontWeight: 700, background: needsFill ? '#fff3cd' : '#d4edda', color: needsFill ? '#856404' : '#155724', whiteSpace: 'nowrap', display: 'inline-block', marginBottom: '2px', border: needsFill ? '1px solid #ffeeba' : '1px solid #c3e6cb' }}>{needsFill ? 'Manager Missing' : 'Manager Added'}</span></div></td>
@@ -1167,7 +1202,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                       <button
                                         type="button"
-                                        onClick={() => hasQualityReport && handleUpdateClick(entry)}
+                                        onClick={() => hasQualityReport && handleOpenQualityPopup(entry)}
                                         style={{ background: 'transparent', border: 'none', color: '#1565c0', textDecoration: hasQualityReport ? 'underline' : 'none', cursor: hasQualityReport ? 'pointer' : 'default', fontWeight: 700, fontSize: '13px', padding: 0, textAlign: 'left' }}
                                       >
                                         {partyLabel}
@@ -1282,7 +1317,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                   <td style={{ ...cellStyle(mstMissing), textAlign: 'center' }}>{mstMissing ? 'Need' : (o.moistureValue != null ? `${toNumberText(o.moistureValue)}%` : '-')}</td>
                                   <td style={cellStyle(bkrgMissing)}>{bkrgMissing ? 'Need' : fmtVal(o.brokerage, o.brokerageUnit)}</td>
                                   <td style={cellStyle(lfMissing)}>{hasLf ? (lfMissing ? 'Need' : fmtVal(o.lf, o.lfUnit)) : 'Not Applicable'}</td>
-                                  <td style={cellStyle(hamaliMissing)}>{hamaliMissing ? 'Need' : fmtVal(o.hamali || o.hamaliPerKg, o.hamaliUnit)}</td>
+                                  <td style={cellStyle(hamaliMissing)}>{hamaliMissing ? 'Need' : fmtVal(effectiveHamaliValue, o.hamaliUnit)}</td>
                                   <td style={cellStyle(cdMissing)}>
                                     {o.cdEnabled ? `${Math.round(Number(o.cdValue) || 0)} ${o.cdUnit === 'percentage' ? '%' : 'L'}` : '-'}
                                   </td>
@@ -1399,6 +1434,13 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {(() => {
+                  const getAttemptLabel = (attemptNo: number, idx: number) => {
+                    const num = attemptNo || idx + 1;
+                    if (num === 1) return '1st Sample';
+                    if (num === 2) return '2nd Sample';
+                    if (num === 3) return '3rd Sample';
+                    return `${num}th Sample`;
+                  };
                   const fields = [
                     { label: 'Reported By', value: (attempt: QualityAttemptDetail) => attempt.reportedBy ? toSentenceCase(attempt.reportedBy) : '-' },
                     { label: 'Reported At', value: (attempt: QualityAttemptDetail) => attempt.createdAt ? new Date(attempt.createdAt).toLocaleString('en-IN') : '-' },
@@ -1426,12 +1468,54 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                     return qualityAttemptDetails.some((attempt) => isMeaningfulCellValue(field.value(attempt)));
                   });
 
+                  if (qualityAttemptDetails.length > 1) {
+                    return (
+                      <div style={{ overflowX: 'auto', width: '100%' }}>
+                        <table style={{ width: '100%', minWidth: '1180px', borderCollapse: 'collapse', background: '#fff' }}>
+                          <thead>
+                            <tr>
+                              <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', width: '120px' }} />
+                              {fields.map((field) => (
+                                <th
+                                  key={field.label}
+                                  style={{ textAlign: 'center', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', fontSize: '11px', color: '#64748b', fontWeight: 700, whiteSpace: 'nowrap' }}
+                                >
+                                  {field.label}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {qualityAttemptDetails.map((attempt, idx) => (
+                              <tr key={`${qualityModalEntry.id}-quality-attempt-row-${attempt.attemptNo || idx}`} style={{ borderBottom: '1px solid #edf2f7' }}>
+                                <td style={{ padding: '10px', fontWeight: 800, color: '#111827', whiteSpace: 'nowrap' }}>
+                                  <div>{getAttemptLabel(attempt.attemptNo || 0, idx)}</div>
+                                  <div style={{ fontSize: '10px', color: '#64748b', fontWeight: 700, marginTop: '4px' }}>
+                                    {attempt.createdAt ? new Date(attempt.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
+                                  </div>
+                                </td>
+                                {fields.map((field) => (
+                                  <td
+                                    key={`${qualityModalEntry.id}-quality-attempt-row-${attempt.attemptNo || idx}-${field.label}`}
+                                    style={{ padding: '10px', textAlign: 'center', fontSize: '12px', color: '#1f2937', fontWeight: 600, whiteSpace: 'nowrap' }}
+                                  >
+                                    {field.value(attempt)}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       {qualityAttemptDetails.map((attempt) => (
                         <div key={`${qualityModalEntry.id}-quality-attempt-${attempt.attemptNo}`} style={{ border: '1px solid #d1d5db', borderRadius: '10px', padding: '12px', background: '#f8fafc' }}>
                           <div style={{ fontSize: '14px', fontWeight: 800, color: '#1e3a8a', marginBottom: '10px' }}>
-                            {getAttemptLabel(attempt.attemptNo)} Sample
+                            {getAttemptLabel(attempt.attemptNo || 0, 0)}
                           </div>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
                             {fields.map((field) => (
@@ -1510,13 +1594,13 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
               <div style={modalCardStyle}>
                 <span style={modalTagStyle(false)}>Admin Added</span>
                 <label style={modalLabelStyle}>Final Rate</label>
-                <div style={modalMetaStyle}>{formatRateTypeLabel(modalRateType)} | {unitLabel(modalOffering.baseRateUnit || 'per_bag')}</div>
+                <div style={modalMetaStyle}>{formatRateTypeLabel(modalRateType)} | {formatRateUnitLabel(modalBaseRateUnit)}</div>
                 <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.finalBaseRate ?? modalOffering.offerBaseRateValue) ? `Rs ${toNumberText(modalOffering.finalBaseRate ?? modalOffering.offerBaseRateValue)}` : '-'}</div>
               </div>
               <div style={modalSuteMissing ? modalEditableCardStyle : modalCardStyle}>
                 <span style={modalTagStyle(modalSuteMissing)}>{modalSuteMissing ? 'Manager Add' : 'Admin Added'}</span>
                 <label style={modalLabelStyle}>Sute</label>
-                <div style={modalMetaStyle}>{formatSuteUnitLabel(managerData.suteUnit || modalOffering.finalSuteUnit || modalOffering.suteUnit)}</div>
+                <div style={modalMetaStyle}>{formatSuteUnitLabel(modalSuteUnit)}</div>
                 {modalSuteMissing ? (
                   <input type="text" inputMode="decimal" value={managerData.sute} onChange={(e) => setManagerData({ ...managerData, sute: sanitizeAmountInput(e.target.value) })} style={modalInputStyle} placeholder="Enter sute" />
                 ) : (
@@ -1539,32 +1623,56 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
               <div style={modalHamaliMissing ? modalEditableCardStyle : modalCardStyle}>
                 <span style={modalTagStyle(modalHamaliMissing)}>{modalHamaliMissing ? 'Manager Add' : 'Admin Added'}</span>
                 <label style={modalLabelStyle}>Hamali</label>
-                <div style={modalMetaStyle}>{modalOffering.hamaliEnabled === false ? 'Pending from manager' : formatChargeUnitLabel(managerData.hamaliUnit || modalOffering.hamaliUnit)}</div>
+                <div style={modalMetaStyle}>{modalOffering.hamaliEnabled === false ? `Pending from manager | ${formatChargeUnitLabel(modalHamaliUnit)}` : formatChargeUnitLabel(modalHamaliUnit)}</div>
                 {modalHamaliMissing ? (
-                  <input type="text" inputMode="decimal" value={managerData.hamali} onChange={(e) => setManagerData({ ...managerData, hamali: sanitizeAmountInput(e.target.value) })} style={modalInputStyle} placeholder="Enter hamali" />
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input type="text" inputMode="decimal" value={managerData.hamali} onChange={(e) => setManagerData({ ...managerData, hamali: sanitizeAmountInput(e.target.value) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter hamali" />
+                    <select value={managerData.hamaliUnit} onChange={(e) => setManagerData({ ...managerData, hamaliUnit: e.target.value })} style={modalInlineSelectStyle}>
+                      <option value="per_bag">Per Bag</option>
+                      <option value="per_kg">Per Kg</option>
+                      <option value="per_ton">Per Ton</option>
+                      <option value="per_quintal">Per Quintal</option>
+                    </select>
+                  </div>
                 ) : (
-                  <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.hamali || modalOffering.hamaliPerKg) ? fmtVal(modalOffering.hamali || modalOffering.hamaliPerKg, modalOffering.hamaliUnit) : 'No'}</div>
+                  <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.hamali || modalOffering.hamaliPerKg) ? fmtVal(modalOffering.hamali || modalOffering.hamaliPerKg, modalHamaliUnit) : 'No'}</div>
                 )}
               </div>
               <div style={modalBrokerageMissing ? modalEditableCardStyle : modalCardStyle}>
                 <span style={modalTagStyle(modalBrokerageMissing)}>{modalBrokerageMissing ? 'Manager Add' : 'Admin Added'}</span>
                 <label style={modalLabelStyle}>Brokerage</label>
-                <div style={modalMetaStyle}>{modalOffering.brokerageEnabled === false ? 'Pending from manager' : formatChargeUnitLabel(managerData.brokerageUnit || modalOffering.brokerageUnit)}</div>
+                <div style={modalMetaStyle}>{modalOffering.brokerageEnabled === false ? `Pending from manager | ${formatChargeUnitLabel(modalBrokerageUnit)}` : formatChargeUnitLabel(modalBrokerageUnit)}</div>
                 {modalBrokerageMissing ? (
-                  <input type="text" inputMode="decimal" value={managerData.brokerage} onChange={(e) => setManagerData({ ...managerData, brokerage: sanitizeAmountInput(e.target.value) })} style={modalInputStyle} placeholder="Enter brokerage" />
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input type="text" inputMode="decimal" value={managerData.brokerage} onChange={(e) => setManagerData({ ...managerData, brokerage: sanitizeAmountInput(e.target.value) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter brokerage" />
+                    <select value={managerData.brokerageUnit} onChange={(e) => setManagerData({ ...managerData, brokerageUnit: e.target.value })} style={modalInlineSelectStyle}>
+                      <option value="per_bag">Per Bag</option>
+                      <option value="per_kg">Per Kg</option>
+                      <option value="per_ton">Per Ton</option>
+                      <option value="per_quintal">Per Quintal</option>
+                    </select>
+                  </div>
                 ) : (
-                  <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.brokerage) ? fmtVal(modalOffering.brokerage, modalOffering.brokerageUnit) : 'No'}</div>
+                  <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.brokerage) ? fmtVal(modalOffering.brokerage, modalBrokerageUnit) : 'No'}</div>
                 )}
               </div>
               <div style={modalHasLf ? (modalLfMissing ? modalEditableCardStyle : modalCardStyle) : modalCardStyle}>
                 <span style={modalTagStyle(modalHasLf && modalLfMissing)}>{modalHasLf ? (modalLfMissing ? 'Manager Add' : 'Admin Added') : 'Not Applicable'}</span>
                 <label style={modalLabelStyle}>LF</label>
-                <div style={modalMetaStyle}>{modalHasLf ? formatChargeUnitLabel(managerData.lfUnit || modalOffering.lfUnit) : 'Not applicable for MD/WB'}</div>
+                <div style={modalMetaStyle}>{modalHasLf ? (modalOffering.lfEnabled === false ? `Pending from manager | ${formatChargeUnitLabel(modalLfUnit)}` : formatChargeUnitLabel(modalLfUnit)) : 'Not applicable for MD/WB'}</div>
                 {modalHasLf ? (
                   modalLfMissing ? (
-                    <input type="text" inputMode="decimal" value={managerData.lf} onChange={(e) => setManagerData({ ...managerData, lf: sanitizeAmountInput(e.target.value) })} style={modalInputStyle} placeholder="Enter LF" />
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input type="text" inputMode="decimal" value={managerData.lf} onChange={(e) => setManagerData({ ...managerData, lf: sanitizeAmountInput(e.target.value) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter LF" />
+                      <select value={managerData.lfUnit} onChange={(e) => setManagerData({ ...managerData, lfUnit: e.target.value })} style={modalInlineSelectStyle}>
+                        <option value="per_bag">Per Bag</option>
+                        <option value="per_kg">Per Kg</option>
+                        <option value="per_ton">Per Ton</option>
+                        <option value="per_quintal">Per Quintal</option>
+                      </select>
+                    </div>
                   ) : (
-                    <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.lf) ? fmtVal(modalOffering.lf, modalOffering.lfUnit) : 'No'}</div>
+                    <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.lf) ? fmtVal(modalOffering.lf, modalLfUnit) : 'No'}</div>
                   )
                 ) : (
                   <div style={modalReadonlyValueStyle}>Not Applicable</div>
@@ -1577,31 +1685,51 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                 <div style={modalCdMissing ? modalEditableCardStyle : modalCardStyle}>
                   <span style={modalTagStyle(modalCdMissing)}>{modalCdMissing ? 'Manager Add' : 'Admin Added'}</span>
                   <label style={modalLabelStyle}>CD</label>
-                  <div style={modalMetaStyle}>{modalOffering.cdEnabled ? formatChargeUnitLabel(managerData.cdUnit || modalOffering.cdUnit) : 'No'}</div>
+                  <div style={modalMetaStyle}>{modalOffering.cdEnabled ? formatChargeUnitLabel(modalCdUnit) : 'No'}</div>
                   {modalCdMissing ? (
-                    <input type="text" inputMode="decimal" value={managerData.cdValue} onChange={(e) => setManagerData({ ...managerData, cdValue: sanitizeAmountInput(e.target.value, 8) })} style={modalInputStyle} placeholder="Enter CD" />
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input type="text" inputMode="decimal" value={managerData.cdValue} onChange={(e) => setManagerData({ ...managerData, cdValue: sanitizeAmountInput(e.target.value, 8) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter CD" />
+                      <select value={managerData.cdUnit} onChange={(e) => setManagerData({ ...managerData, cdUnit: e.target.value })} style={modalInlineSelectStyle}>
+                        <option value="percentage">Percent</option>
+                        <option value="lumps">Lumps</option>
+                      </select>
+                    </div>
                   ) : (
-                    <div style={modalReadonlyValueStyle}>{modalOffering.cdEnabled ? (hasValue(modalOffering.cdValue) ? (modalOffering.cdUnit === 'percentage' ? `${toNumberText(modalOffering.cdValue)} %` : `${toNumberText(modalOffering.cdValue)} Lumps`) : 'Pending') : 'No'}</div>
+                    <div style={modalReadonlyValueStyle}>{modalOffering.cdEnabled ? (hasValue(modalOffering.cdValue) ? (modalCdUnit === 'percentage' ? `${toNumberText(modalOffering.cdValue)} %` : `${toNumberText(modalOffering.cdValue)} Lumps`) : 'Pending') : 'No'}</div>
                   )}
                 </div>
                 <div style={modalBankLoanMissing ? modalEditableCardStyle : modalCardStyle}>
                   <span style={modalTagStyle(modalBankLoanMissing)}>{modalBankLoanMissing ? 'Manager Add' : 'Admin Added'}</span>
                   <label style={modalLabelStyle}>Bank Loan</label>
-                  <div style={modalMetaStyle}>{modalOffering.bankLoanEnabled ? formatChargeUnitLabel(managerData.bankLoanUnit || modalOffering.bankLoanUnit) : 'No'}</div>
+                  <div style={modalMetaStyle}>{modalOffering.bankLoanEnabled ? formatChargeUnitLabel(modalBankLoanUnit) : 'No'}</div>
                   {modalBankLoanMissing ? (
-                    <input type="text" inputMode="decimal" value={managerData.bankLoanValue} onChange={(e) => setManagerData({ ...managerData, bankLoanValue: sanitizeAmountInput(e.target.value, 8) })} style={modalInputStyle} placeholder="Enter bank loan" />
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input type="text" inputMode="decimal" value={managerData.bankLoanValue} onChange={(e) => setManagerData({ ...managerData, bankLoanValue: sanitizeAmountInput(e.target.value, 8) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter bank loan" />
+                      <select value={managerData.bankLoanUnit} onChange={(e) => setManagerData({ ...managerData, bankLoanUnit: e.target.value })} style={modalInlineSelectStyle}>
+                        <option value="per_bag">Per Bag</option>
+                        <option value="per_kg">Per Kg</option>
+                        <option value="per_ton">Per Ton</option>
+                        <option value="per_quintal">Per Quintal</option>
+                      </select>
+                    </div>
                   ) : (
-                    <div style={modalReadonlyValueStyle}>{modalOffering.bankLoanEnabled ? (hasValue(modalOffering.bankLoanValue) ? (modalOffering.bankLoanUnit === 'per_bag' ? `Rs ${formatIndianCurrency(modalOffering.bankLoanValue)} / Bag` : `Rs ${formatIndianCurrency(modalOffering.bankLoanValue)}`) : 'Pending') : 'No'}</div>
+                    <div style={modalReadonlyValueStyle}>{modalOffering.bankLoanEnabled ? formatRsWithUnitLabel(modalOffering.bankLoanValue, modalBankLoanUnit) : 'No'}</div>
                   )}
                 </div>
                 <div style={modalPaymentMissing ? modalEditableCardStyle : modalCardStyle}>
                   <span style={modalTagStyle(modalPaymentMissing)}>{modalPaymentMissing ? 'Manager Add' : 'Admin Added'}</span>
                   <label style={modalLabelStyle}>Payment Condition</label>
-                  <div style={modalMetaStyle}>{managerData.paymentConditionEnabled ? (managerData.paymentConditionUnit === 'month' ? 'Month' : 'Days') : 'No'}</div>
+                  <div style={modalMetaStyle}>{modalPaymentEnabled ? (modalPaymentUnit === 'month' ? 'Month' : 'Days') : 'No'}</div>
                   {modalPaymentMissing ? (
-                    <input type="text" inputMode="numeric" value={managerData.paymentConditionValue} onChange={(e) => setManagerData({ ...managerData, paymentConditionValue: e.target.value.replace(/[^0-9]/g, '').slice(0, 3) })} style={modalInputStyle} placeholder="Enter payment" />
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input type="text" inputMode="numeric" value={managerData.paymentConditionValue} onChange={(e) => setManagerData({ ...managerData, paymentConditionValue: e.target.value.replace(/[^0-9]/g, '').slice(0, 3) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter payment" />
+                      <select value={managerData.paymentConditionUnit} onChange={(e) => setManagerData({ ...managerData, paymentConditionUnit: e.target.value })} style={modalInlineSelectStyle}>
+                        <option value="days">Days</option>
+                        <option value="month">Month</option>
+                      </select>
+                    </div>
                   ) : (
-                    <div style={modalReadonlyValueStyle}>{managerData.paymentConditionEnabled ? formatPaymentCondition(modalOffering.paymentConditionValue ?? managerData.paymentConditionValue, managerData.paymentConditionUnit) : 'No'}</div>
+                    <div style={modalReadonlyValueStyle}>{modalPaymentEnabled ? formatPaymentCondition(modalOffering.paymentConditionValue ?? managerData.paymentConditionValue, modalPaymentUnit) : 'No'}</div>
                   )}
                 </div>
               </div>

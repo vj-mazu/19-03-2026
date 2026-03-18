@@ -137,34 +137,23 @@ const hasSampleBookReadySnapshot = (attempt = {}) => {
   if (hasFullQualitySnapshot(attempt)) return true;
   return !hasAnyDetailedQuality(attempt);
 };
-const getResampleBoundaryTime = (entry = {}) => {
-  const explicitBoundary = toTimeValue(entry.resampleStartAt || null);
-  if (explicitBoundary) return explicitBoundary;
-
-  if (String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL') {
-    return toTimeValue(entry.lotSelectionAt || null);
-  }
-
-  return 0;
-};
 const isResampleWorkflowEntry = (entry = {}) => {
   const decision = String(entry.lotSelectionDecision || '').toUpperCase();
   return decision === 'FAIL'
-    || getResampleBoundaryTime(entry) > 0
+    || Boolean(entry.resampleStartAt)
     || (decision === 'PASS_WITH_COOKING' && Number(entry.qualityReportAttempts || 0) > 1);
 };
 const hasPostResampleAttempt = (entry = {}, predicate = hasQualitySnapshot) => {
-  const attempts = Array.isArray(entry.qualityAttemptDetails) ? entry.qualityAttemptDetails : [];
-  const boundary = getResampleBoundaryTime(entry);
+  const attempts = Array.isArray(entry.qualityAttemptDetails)
+    ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0))
+    : [];
 
-  if (!boundary) {
-    return attempts.filter((attempt) => predicate(attempt)).length > 1;
+  if (!isResampleWorkflowEntry(entry) || attempts.length <= 1) {
+    return false;
   }
 
-  return attempts.some((attempt) => {
-    const attemptTime = toTimeValue(attempt?.updatedAt || attempt?.createdAt || null);
-    return attemptTime >= boundary && predicate(attempt);
-  });
+  const latestAttempt = attempts[attempts.length - 1] || null;
+  return !!latestAttempt && predicate(latestAttempt);
 };
 
 const getOfferLabel = (key) => `Offer ${OFFER_KEYS.indexOf(key) + 1}`;
@@ -473,15 +462,7 @@ class SampleEntryService {
       if (requestedStatus === 'PENDING_LOT_SELECTION') {
         result.entries = result.entries.filter((entry) => {
           if (String(entry.lotSelectionDecision || '').toUpperCase() !== 'FAIL') return true;
-
-          const lotSelectionAt = getResampleBoundaryTime(entry);
-          if (!lotSelectionAt) return false;
-
-          const attempts = Array.isArray(entry.qualityAttemptDetails) ? entry.qualityAttemptDetails : [];
-          return attempts.some((attempt) => {
-            const attemptTime = toTimeValue(attempt?.updatedAt || attempt?.createdAt);
-            return attemptTime > lotSelectionAt && hasSampleBookReadySnapshot(attempt);
-          });
+          return hasPostResampleAttempt(entry, hasSampleBookReadySnapshot);
         });
       }
       if (requestedStatus === 'COOKING_BOOK') {
@@ -498,15 +479,7 @@ class SampleEntryService {
         result.entries = result.entries.filter((entry) => {
           if (String(entry.workflowStatus || '').toUpperCase() !== 'COOKING_REPORT') return false;
           if (!isResampleWorkflowEntry(entry)) return false;
-
-          const boundary = getResampleBoundaryTime(entry);
-          const qualityUpdatedAt = entry.qualityParameters?.updatedAt || entry.qualityParameters?.createdAt || null;
-          const qualityTime = toTimeValue(qualityUpdatedAt);
-          const currentQualityReady = boundary
-            ? qualityTime >= boundary && hasQualitySnapshot(entry.qualityParameters || {})
-            : Number(entry.qualityReportAttempts || 0) > 1;
-
-          return hasPostResampleAttempt(entry, hasQualitySnapshot) || currentQualityReady;
+          return hasPostResampleAttempt(entry, hasQualitySnapshot);
         });
       }
     }

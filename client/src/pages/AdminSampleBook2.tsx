@@ -260,18 +260,34 @@ const getQualityAttemptsForEntry = (entry: any) => {
     if (baseAttempts.length === 0) return [currentQuality];
 
     const latestStoredAttempt = baseAttempts[baseAttempts.length - 1];
-    const latestStoredTs = getTimeValue(latestStoredAttempt?.updatedAt || latestStoredAttempt?.createdAt || null);
-    const currentQualityTs = getTimeValue(currentQuality.updatedAt || currentQuality.createdAt || null);
-    const lotSelectionTs = getTimeValue(entry?.lotSelectionAt || null);
     const isResampleFlow = String(entry?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
         || String(entry?.lotSelectionDecision || '').toUpperCase() === 'PASS_WITH_COOKING'
         || baseAttempts.length > 1
         || (Number(entry?.qualityReportAttempts) > 1);
+    const getAttemptFingerprint = (attempt: any) => ([
+        attempt?.reportedBy ?? '',
+        attempt?.moistureRaw ?? attempt?.moisture ?? '',
+        attempt?.grainsCountRaw ?? attempt?.grainsCount ?? '',
+        attempt?.cutting1Raw ?? attempt?.cutting1 ?? '',
+        attempt?.bend1Raw ?? attempt?.bend1 ?? '',
+        attempt?.mixRaw ?? attempt?.mix ?? '',
+        attempt?.mixSRaw ?? attempt?.mixS ?? '',
+        attempt?.mixLRaw ?? attempt?.mixL ?? '',
+        attempt?.kanduRaw ?? attempt?.kandu ?? '',
+        attempt?.oilRaw ?? attempt?.oil ?? '',
+        attempt?.skRaw ?? attempt?.sk ?? '',
+        attempt?.wbRRaw ?? attempt?.wbR ?? '',
+        attempt?.wbBkRaw ?? attempt?.wbBk ?? '',
+        attempt?.wbTRaw ?? attempt?.wbT ?? '',
+        attempt?.paddyWbRaw ?? attempt?.paddyWb ?? '',
+        attempt?.smellHas ?? '',
+        attempt?.smellType ?? ''
+    ].map((value) => String(value ?? '').trim()).join('|'));
     const currentAlreadyIncluded = baseAttempts.some((a: any) =>
         (a.id && currentQuality.id && String(a.id) === String(currentQuality.id))
-        || (currentQualityTs > 0 && latestStoredTs > 0 && currentQualityTs === latestStoredTs)
+        || getAttemptFingerprint(a) === getAttemptFingerprint(currentQuality)
     );
-    const shouldAppendCurrentQuality = isResampleFlow && !currentAlreadyIncluded && currentQualityTs > 0;
+    const shouldAppendCurrentQuality = isResampleFlow && !currentAlreadyIncluded;
 
     if (!shouldAppendCurrentQuality) return baseAttempts;
 
@@ -602,7 +618,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
         return 'Pending';
     };
 
-    const buildQualityStatusRows = (entry: SampleEntry) => {
+const buildQualityStatusRows = (entry: SampleEntry) => {
         const attemptsSorted = getQualityAttemptsForEntry(entry);
         const isHardFailed = String(entry.workflowStatus || '').toUpperCase() === 'FAILED';
         const isFailDecision = String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL' && String(entry.workflowStatus || '').toUpperCase() !== 'FAILED';
@@ -612,14 +628,8 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
         const previousDecision = (entry as any).recheckPreviousDecision || null;
         const hasCookingHistory = buildCookingStatusRows(entry).length > 0;
         const isCookingDrivenResample = String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL' && hasCookingHistory;
-        const resampleBoundaryTs = getTimeValue((entry as any).resampleStartAt || (String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL' ? (entry as any).lotSelectionAt : null));
-        const hasCurrentResampleQuality = attemptsSorted.some((attempt: any) => {
-            const attemptTs = getTimeValue(attempt?.updatedAt || attempt?.createdAt || null);
-            return resampleBoundaryTs ? attemptTs > resampleBoundaryTs : (attemptsSorted.length > 1 && attemptTs > 0);
-        });
+        const hasCurrentResampleQuality = attemptsSorted.length > 1;
         const rows = attemptsSorted.map((attempt: any, idx: number) => {
-            const attemptTs = getTimeValue(attempt?.updatedAt || attempt?.createdAt || null);
-            const isBeforeResampleBoundary = resampleBoundaryTs > 0 && attemptTs > 0 && attemptTs < resampleBoundaryTs;
             const isLast = idx === attemptsSorted.length - 1;
             let status = mapQualityDecisionToStatus(entry.lotSelectionDecision);
 
@@ -629,11 +639,6 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                 } else {
                     status = isLast ? (isHardFailed ? 'Fail' : 'Pending') : 'Pass';
                 }
-            } else if (isBeforeResampleBoundary) {
-                status = 'Pass';
-            } else if (resampleBoundaryTs > 0 && attemptTs >= resampleBoundaryTs) {
-                const overallStatus = mapQualityDecisionToStatus(entry.lotSelectionDecision);
-                status = isHardFailed ? 'Fail' : (overallStatus === 'Pass' ? 'Pass' : 'Pending');
             } else if (isLast && isQualityRecheckPending && !isCookingOnlyRecheck) {
                 status = mapQualityDecisionToStatus(previousDecision || entry.lotSelectionDecision);
             } else if (isLast && isCookingDrivenResample) {
@@ -658,7 +663,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
 
         if (isFailDecision && !hasCurrentResampleQuality) {
             rows.push({ type: 'Pending', status: 'Resampling' });
-        } else if (isFailDecision && hasCurrentResampleQuality && rows.length === 1 && resampleBoundaryTs > 0) {
+        } else if (isFailDecision && hasCurrentResampleQuality && rows.length === 1) {
             rows.unshift({ type: 'Done', status: 'Pass' });
         } else if (isQualityRecheckPending && !isCookingOnlyRecheck) {
             rows.push({ type: 'Recheck', status: 'Rechecking' });

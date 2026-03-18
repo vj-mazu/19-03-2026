@@ -386,15 +386,18 @@ const formatShortEntryDate = (value?: string | null) => {
 };
 const getResampleAssignmentTimeline = (entry: any) => {
   const rawTimeline = Array.isArray(entry?.sampleCollectedTimeline) ? entry.sampleCollectedTimeline : [];
+  const resampleStartTime = entry?.resampleStartAt ? new Date(entry.resampleStartAt).getTime() : 0;
   const normalized: Array<{ name: string; date: string | null }> = [];
   rawTimeline.forEach((item: any) => {
     const name = typeof item === 'string' ? item.trim() : String(item?.name || '').trim();
     const date = typeof item === 'object' && item ? (item.date || null) : null;
+    const itemTime = date ? new Date(date).getTime() : 0;
     if (!name) return;
-    const existingIndex = normalized.findIndex((row) => row.name.toLowerCase() === name.toLowerCase());
-    if (existingIndex >= 0) {
-      if (!normalized[existingIndex].date && date) {
-        normalized[existingIndex].date = date;
+    if (resampleStartTime > 0 && itemTime > 0 && itemTime < resampleStartTime) return;
+    const lastItem = normalized[normalized.length - 1];
+    if (lastItem && lastItem.name.toLowerCase() === name.toLowerCase()) {
+      if (!lastItem.date && date) {
+        lastItem.date = date;
       }
       return;
     }
@@ -1253,7 +1256,7 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                     <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center' }}>
                                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
                                         <div>{qp.grainsCount ? `(${qp.grainsCount})` : '-'}</div>
-                                        {entry.lotSelectionDecision === 'FAIL' && (() => {
+                                        {(() => {
                                           const assignmentTimeline = getResampleAssignmentTimeline(entry);
                                           if (assignmentTimeline.length === 0) return null;
                                           return (

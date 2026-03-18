@@ -68,14 +68,10 @@ const attachLoadingLotsHistories = async (rows) => {
     const normalized = typeof value === 'string' ? value.trim() : '';
     if (!normalized) return;
     const normalizedDate = date || null;
-    const lower = normalized.toLowerCase();
-    const existingIndex = list.findIndex((item) => String(item?.name || '').toLowerCase() === lower);
-    if (existingIndex >= 0) {
-      if (normalizedDate && (!list[existingIndex]?.date || new Date(normalizedDate).getTime() > new Date(list[existingIndex].date).getTime())) {
-        list[existingIndex] = {
-          ...list[existingIndex],
-          date: normalizedDate
-        };
+    const lastItem = list[list.length - 1];
+    if (lastItem && String(lastItem?.name || '').trim().toLowerCase() === normalized.toLowerCase()) {
+      if (normalizedDate && (!lastItem?.date || new Date(normalizedDate).getTime() > new Date(lastItem.date).getTime())) {
+        lastItem.date = normalizedDate;
       }
       return;
     }
