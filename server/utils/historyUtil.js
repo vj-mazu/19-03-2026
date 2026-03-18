@@ -310,9 +310,12 @@ const attachLoadingLotsHistories = async (rows) => {
     );
     
     const qualityAttemptDetails = [];
-    const resampleStartTime = row?.lotSelectionDecision === 'FAIL' && row?.lotSelectionAt
-      ? toTime(row.lotSelectionAt)
-      : 0;
+    
+    // Find the original FAIL decision time to mark the start of resample flow.
+    // If the lot was failed, there will be an audit log setting lotSelectionDecision to 'FAIL'
+    const failLog = sampleEntryAuditLogs.find(l => String(l.newValues?.lotSelectionDecision || '').toUpperCase() === 'FAIL');
+    const resampleStartTime = failLog ? toTime(failLog.createdAt) : 0;
+    target.resampleStartAt = failLog?.createdAt || null;
     
     if (transitionLogs.length > 0) {
       // Each transition marks the start of a new attempt.

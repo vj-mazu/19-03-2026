@@ -134,6 +134,12 @@ const WORKFLOW_TRANSITIONS = [
   },
   {
     fromStatus: 'FINAL_REPORT',
+    toStatus: 'FAILED',
+    allowedRoles: ['admin', 'manager', 'owner'],
+    requiredData: []
+  },
+  {
+    fromStatus: 'FINAL_REPORT',
     toStatus: 'LOT_ALLOTMENT',
     allowedRoles: ['admin', 'manager', 'owner'],
     requiredData: ['offeringPrice']

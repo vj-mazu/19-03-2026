@@ -88,6 +88,13 @@ const toSentenceCase = (value: string) => {
   if (!normalized) return '';
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 };
+const resolveMediaUrl = (value?: string | null) => {
+  const url = String(value || '').trim();
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  const baseUrl = API_URL.replace(/\/api\/?$/, '');
+  return url.startsWith('/') ? `${baseUrl}${url}` : `${baseUrl}/${url}`;
+};
 const toNumberText = (value: any, digits = 2) => {
   const num = Number(value);
   return Number.isFinite(num) ? num.toFixed(digits).replace(/\.00$/, '') : '-';
@@ -142,8 +149,79 @@ const getTimeValue = (value?: string | null) => {
   const time = new Date(value).getTime();
   return Number.isFinite(time) ? time : 0;
 };
+const isProvidedNumericValue = (rawVal: any, valueVal: any) => {
+  const raw = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : '';
+  if (raw !== '') return true;
+  const num = Number(valueVal);
+  return Number.isFinite(num) && num > 0;
+};
+const hasAlphaOrPositiveValue = (val: any) => {
+  if (val === null || val === undefined || val === '') return false;
+  const raw = String(val).trim();
+  if (!raw) return false;
+  if (/[a-zA-Z]/.test(raw)) return true;
+  const num = parseFloat(raw);
+  return Number.isFinite(num);
+};
+const isProvidedAlphaValue = (rawVal: any, valueVal: any) => {
+  const raw = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : '';
+  if (raw !== '') return true;
+  return hasAlphaOrPositiveValue(valueVal);
+};
+const hasQualitySnapshot = (attempt: any) => {
+  const hasMoisture = isProvidedNumericValue(attempt?.moistureRaw, attempt?.moisture);
+  const hasGrains = isProvidedNumericValue(attempt?.grainsCountRaw, attempt?.grainsCount);
+  const hasDetailedQuality =
+    isProvidedNumericValue(attempt?.cutting1Raw, attempt?.cutting1) ||
+    isProvidedNumericValue(attempt?.bend1Raw, attempt?.bend1) ||
+    isProvidedAlphaValue(attempt?.mixRaw, attempt?.mix) ||
+    isProvidedAlphaValue(attempt?.mixSRaw, attempt?.mixS) ||
+    isProvidedAlphaValue(attempt?.mixLRaw, attempt?.mixL) ||
+    isProvidedAlphaValue(attempt?.kanduRaw, attempt?.kandu) ||
+    isProvidedAlphaValue(attempt?.oilRaw, attempt?.oil) ||
+    isProvidedAlphaValue(attempt?.skRaw, attempt?.sk);
+
+  return hasMoisture && (hasGrains || hasDetailedQuality);
+};
+const getQualityAttemptsForEntry = (entry: any) => {
+  const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
+    ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
+    : [];
+  const currentQuality = entry?.qualityParameters;
+
+  if (!currentQuality) return baseAttempts;
+  if (baseAttempts.length === 0) return hasQualitySnapshot(currentQuality) ? [currentQuality] : [];
+
+  const latestStoredAttempt = baseAttempts[baseAttempts.length - 1];
+  const latestStoredTs = getTimeValue(latestStoredAttempt?.updatedAt || latestStoredAttempt?.createdAt || null);
+  const currentQualityTs = getTimeValue(currentQuality.updatedAt || currentQuality.createdAt || null);
+  const lotSelectionTs = getTimeValue(entry?.lotSelectionAt || null);
+  const isResampleFlow = String(entry?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
+    || String(entry?.lotSelectionDecision || '').toUpperCase() === 'PASS_WITH_COOKING'
+    || baseAttempts.length > 1
+    || (Number(entry?.qualityReportAttempts) > 1);
+  const currentAlreadyIncluded = baseAttempts.some((a: any) =>
+    (a.id && currentQuality.id && String(a.id) === String(currentQuality.id))
+    || (currentQualityTs > 0 && latestStoredTs > 0 && currentQualityTs === latestStoredTs)
+  );
+  const shouldAppendCurrentQuality =
+    hasQualitySnapshot(currentQuality) &&
+    isResampleFlow &&
+    !currentAlreadyIncluded &&
+    currentQualityTs > 0;
+
+  if (!shouldAppendCurrentQuality) return baseAttempts;
+
+  return [
+    ...baseAttempts,
+    {
+      ...currentQuality,
+      attemptNo: Math.max(...baseAttempts.map((attempt: any) => Number(attempt.attemptNo) || 0), 1) + 1
+    }
+  ];
+};
 const getEntrySmellLabel = (entry: any) => {
-  const attempts = Array.isArray(entry?.qualityAttemptDetails) ? entry.qualityAttemptDetails : [];
+  const attempts = getQualityAttemptsForEntry(entry);
   for (let idx = attempts.length - 1; idx >= 0; idx -= 1) {
     const attempt = attempts[idx];
     if (attempt?.smellHas || (attempt?.smellType && String(attempt.smellType).trim())) {
@@ -172,9 +250,24 @@ const splitHistoryByResampleStart = (entry: SampleEntry, history: any[]) => {
   return { before, after, hasSplit: true };
 };
 const hasCurrentCycleQualityData = (entry: SampleEntry) => {
-  const quality = entry.qualityParameters as any;
   const lotSelectionAt = getTimeValue(entry.lotSelectionAt);
-  if (!quality || !lotSelectionAt) return false;
+  if (!lotSelectionAt) return false;
+  const attempts = Array.isArray((entry as any).qualityAttemptDetails) ? (entry as any).qualityAttemptDetails : [];
+  const hasCurrentCycleAttempt = attempts.some((attempt: any) => {
+    const attemptAt = getTimeValue(attempt?.updatedAt || attempt?.createdAt || null);
+    if (attemptAt < lotSelectionAt) return false;
+    return !!(
+      attempt?.reportedBy
+      || attempt?.id
+      || attempt?.grainsCount
+      || attempt?.grainsCountRaw
+      || attempt?.moisture
+      || attempt?.moistureRaw
+    );
+  });
+  if (hasCurrentCycleAttempt) return true;
+  const quality = entry.qualityParameters as any;
+  if (!quality) return false;
   const qualityAt = getTimeValue(quality.updatedAt || quality.createdAt || null);
   return qualityAt >= lotSelectionAt;
 };
@@ -186,7 +279,9 @@ const getCurrentCycleCookingHistory = (entry: SampleEntry, history: any[]) => {
 
 const getSamplingLabel = (attemptNo: number) => {
   if (attemptNo <= 1) return 'First Sampling';
-  return 'Second Sampling';
+  if (attemptNo === 2) return 'Second Sampling';
+  if (attemptNo === 3) return 'Third Sampling';
+  return `${attemptNo}th Sampling`;
 };
 
 const isResolvedResampleEntry = (entry: SampleEntry) => {
@@ -1588,11 +1683,11 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                 </h3>
                 <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.4', opacity: 0.95, fontWeight: '500' }}>
                   <span style={{ fontWeight: '800' }}>Broker Name:</span> {selectedEntry.brokerName}<br />
-                <span style={{ fontWeight: '800' }}>Party Name:</span> {(() => {
-                  const party = (selectedEntry.partyName || '').trim();
-                  const lorry = selectedEntry.lorryNumber ? selectedEntry.lorryNumber.toUpperCase() : '';
-                  return party ? toTitleCase(party) : (lorry || '-');
-                })()}<br />
+                  <span style={{ fontWeight: '800' }}>Party Name:</span> {(() => {
+                    const party = (selectedEntry.partyName || '').trim();
+                    const lorry = selectedEntry.lorryNumber ? selectedEntry.lorryNumber.toUpperCase() : '';
+                    return party ? toTitleCase(party) : (lorry || '-');
+                  })()}<br />
                   <span style={{ fontWeight: '800' }}>Variety:</span> {selectedEntry.variety}<br />
                   <span style={{ fontWeight: '800' }}>Bags:</span> {selectedEntry.bags?.toLocaleString('en-IN')}
                 </p>
@@ -1966,7 +2061,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                   })()}
                 </div>
                 {(() => {
-                  const smellAttempts = Array.isArray((detailEntry as any).qualityAttemptDetails) ? (detailEntry as any).qualityAttemptDetails : [];
+                  const smellAttempts = getQualityAttemptsForEntry(detailEntry as any);
                   const smellAttempt = [...smellAttempts].reverse().find((qp: any) => qp?.smellHas || (qp?.smellType && String(qp.smellType).trim()));
                   const smellHasValue = smellAttempt?.smellHas ?? (detailEntry as any).smellHas;
                   const smellTypeValue = smellAttempt?.smellType ?? (detailEntry as any).smellType;
@@ -1980,413 +2075,448 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                 })()}
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: (Array.isArray((detailEntry as any).qualityAttemptDetails) && (detailEntry as any).qualityAttemptDetails.length > 1) ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) 340px', gap: '20px', alignItems: 'flex-start' }}>
-                <div style={{ minWidth: 0 }}>
-                  <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px' }}>Quality Parameters</h4>
-              {(() => {
-                const qpList = (detailEntry as any).qualityAttemptDetails && (detailEntry as any).qualityAttemptDetails.length > 0
-                  ? [...(detailEntry as any).qualityAttemptDetails].sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
-                  : (detailEntry as any).qualityParameters ? [(detailEntry as any).qualityParameters] : [];
-                if (qpList.length === 0) return <div style={{ color: '#999', textAlign: 'center', padding: '12px', fontSize: '12px' }}>No quality data</div>;
-
-                const displayVal = (rawVal: any, numericVal: any, enabled = true) => {
-                  if (!enabled) return null;
-                  const raw = rawVal != null ? String(rawVal).trim() : '';
-                  if (raw !== '') return raw;
-                  if (numericVal == null || numericVal === '') return null;
-                  const rawNumeric = String(numericVal).trim();
-                  if (!rawNumeric) return null;
-                  const n = Number(rawNumeric);
-                  if (!Number.isFinite(n) || n === 0) return null;
-                  return rawNumeric;
-                };
-                const isProvided = (rawVal: any, numericVal: any) => {
-                  const raw = rawVal != null ? String(rawVal).trim() : '';
-                  if (raw !== '') return true;
-                  if (numericVal == null || numericVal === '') return false;
-                  const rawNumeric = String(numericVal).trim();
-                  if (!rawNumeric) return false;
-                  const n = Number(rawNumeric);
-                  return Number.isFinite(n) && n !== 0;
-                };
-                const isEnabled = (flag: any, rawVal: any, numericVal: any) => (
-                  flag === true || (flag == null && isProvided(rawVal, numericVal))
-                );
-
-                const QItem = ({ label, value }: { label: string; value: React.ReactNode }) => {
-                  const isBold = ['Grains Count', 'Paddy WB'].includes(label);
-                  return (
-                    <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>{label}</div>
-                      <div style={{ fontSize: '13px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
-                    </div>
-                  );
-                };
-                const qualityPhotoUrl = qpList.find((qp: any) => qp?.uploadFileUrl)?.uploadFileUrl;
-                const hasMultipleAttempts = qpList.length > 1;
-                const getAttemptLabel = (attemptNo: number, idx: number) => {
-                  const num = attemptNo || idx + 1;
-                  if (num === 1) return '1st Sample';
-                  if (num === 2) return '2nd Sample';
-                  if (num === 3) return '3rd Sample';
-                  return `${num}th Sample`;
-                };
-
-                if (hasMultipleAttempts) {
-                  const columns = [
-                    { key: 'reportedBy', label: 'Sample Reported By' },
-                    { key: 'moisture', label: 'Moisture' },
-                    { key: 'cutting', label: 'Cutting' },
-                    { key: 'bend', label: 'Bend' },
-                    { key: 'grainsCount', label: 'Grains Count' },
-                    { key: 'mix', label: 'Mix' },
-                    { key: 'mixS', label: 'S Mix' },
-                    { key: 'mixL', label: 'L Mix' },
-                    { key: 'kandu', label: 'Kandu' },
-                    { key: 'oil', label: 'Oil' },
-                    { key: 'sk', label: 'SK' },
-                    { key: 'wbR', label: 'WB-R' },
-                    { key: 'wbBk', label: 'WB-BK' },
-                    { key: 'wbT', label: 'WB-T' },
-                    { key: 'smell', label: 'Smell' },
-                    { key: 'paddyWb', label: 'Paddy WB' }
-                  ];
-
-                  const getCellValue = (qp: any, key: string) => {
-                    const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
-                    const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
-                    const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
-                    const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
-                    if (key === 'reportedBy') return toTitleCase(qp.reportedBy || '-');
-                    if (key === 'moisture') {
-                      const val = displayVal(qp.moistureRaw, qp.moisture);
-                      return val ? `${val}%` : '-';
-                    }
-                    if (key === 'cutting') {
-                      const cut1 = displayVal(qp.cutting1Raw, qp.cutting1);
-                      const cut2 = displayVal(qp.cutting2Raw, qp.cutting2);
-                      return cut1 && cut2 ? `${cut1}x${cut2}` : '-';
-                    }
-                    if (key === 'bend') {
-                      const bend1 = displayVal(qp.bend1Raw, qp.bend1);
-                      const bend2 = displayVal(qp.bend2Raw, qp.bend2);
-                      return bend1 && bend2 ? `${bend1}x${bend2}` : '-';
-                    }
-                    if (key === 'grainsCount') {
-                      const val = displayVal(qp.grainsCountRaw, qp.grainsCount);
-                      return val ? `(${val})` : '-';
-                    }
-                    if (key === 'mix') return displayVal(qp.mixRaw, qp.mix) || '-';
-                    if (key === 'mixS') return displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-';
-                    if (key === 'mixL') return displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-';
-                    if (key === 'kandu') return displayVal(qp.kanduRaw, qp.kandu) || '-';
-                    if (key === 'oil') return displayVal(qp.oilRaw, qp.oil) || '-';
-                    if (key === 'sk') return displayVal(qp.skRaw, qp.sk) || '-';
-                    if (key === 'wbR') return displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-';
-                    if (key === 'wbBk') return displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-';
-                    if (key === 'wbT') return displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-';
-                    if (key === 'smell') {
-                      const smellHasValue = qp.smellHas ?? (detailEntry as any).smellHas;
-                      const smellTypeValue = qp.smellType ?? (detailEntry as any).smellType;
-                      return smellHasValue ? toTitleCase(smellTypeValue || 'Yes') : '-';
-                    }
-                    if (key === 'paddyWb') return displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-';
-                    return '-';
-                  };
-
-                  return (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {qualityPhotoUrl && (
-                        <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px' }}>
-                          <div style={{ fontSize: '11px', fontWeight: '800', color: '#1d4ed8', marginBottom: '8px', textTransform: 'uppercase' }}>Quality Photo</div>
-                          <img
-                            src={`${API_URL.replace('/api', '')}${qualityPhotoUrl}`}
-                            alt="Quality"
-                            style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e0e0e0' }}
-                          />
-                        </div>
-                      )}
-                      <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', minWidth: '1180px', borderCollapse: 'collapse', fontSize: '12px' }}>
-                          <thead>
-                            <tr>
-                              <th style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'left', whiteSpace: 'nowrap' }}>Sample</th>
-                              {columns.map((col) => (
-                                <th key={col.key} style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'center', whiteSpace: 'nowrap' }}>{col.label}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {qpList.map((qp: any, idx: number) => (
-                              <tr key={`${qp.attemptNo || idx}-row`}>
-                                <td style={{ border: '1px solid #e0e0e0', padding: '6px', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                                  {getAttemptLabel(qp.attemptNo, idx)}
-                                </td>
-                                {columns.map((col) => (
-                                  <td key={`${qp.attemptNo || idx}-${col.key}`} style={{ border: '1px solid #e0e0e0', padding: '6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                                    {getCellValue(qp, col.key)}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  );
-                }
-
-                return (
+              {((detailEntry as any).gpsCoordinates || (detailEntry as any).godownImageUrl || (detailEntry as any).paddyLotImageUrl) && (
+                <div style={{ marginBottom: '24px', maxWidth: 'calc(100% - 360px)' }}>
+                  <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px', fontWeight: '900' }}>Location & Media</h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {qualityPhotoUrl && (
-                      <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ fontSize: '11px', fontWeight: '800', color: '#1d4ed8', marginBottom: '8px', textTransform: 'uppercase' }}>Quality Photo</div>
-                        <img
-                          src={`${API_URL.replace('/api', '')}${qualityPhotoUrl}`}
-                          alt="Quality"
-                          style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e0e0e0' }}
-                        />
+                    {(detailEntry as any).gpsCoordinates && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8f9fa', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '11px', color: '#666', fontWeight: '800', textTransform: 'uppercase' }}>GPS Coordinates Captured</div>
+                        <a
+                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((detailEntry as any).gpsCoordinates)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ display: 'inline-block', padding: '6px 16px', background: '#e67e22', color: 'white', borderRadius: '4px', textDecoration: 'none', fontSize: '11px', fontWeight: '800', letterSpacing: '0.5px' }}
+                        >
+                          MAP LINK
+                        </a>
                       </div>
                     )}
-                    {qpList.map((qp: any, idx: number) => {
-                      const smixOn = isEnabled(qp.smixEnabled, (qp as any).mixSRaw, qp.mixS);
-                      const lmixOn = isEnabled(qp.lmixEnabled, (qp as any).mixLRaw, qp.mixL);
-                      const paddyOn = isEnabled(qp.paddyWbEnabled, (qp as any).paddyWbRaw, qp.paddyWb);
-                      const wbOn = isProvided((qp as any).wbRRaw, qp.wbR) || isProvided((qp as any).wbBkRaw, qp.wbBk);
-                      const dryOn = isProvided((qp as any).dryMoistureRaw, (qp as any).dryMoisture);
-                      const row1: { label: string; value: React.ReactNode }[] = [];
-                      const moistureVal = displayVal((qp as any).moistureRaw, qp.moisture);
-                      if (moistureVal) {
-                        const dryVal = displayVal((qp as any).dryMoistureRaw, (qp as any).dryMoisture, dryOn);
-                        row1.push({
-                          label: 'Moisture',
-                          value: dryVal ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px' }}>
-                              <span style={{ color: '#e67e22', fontWeight: '800', fontSize: '11px' }}>{dryVal}%</span>
-                              <span>{moistureVal}%</span>
-                            </div>
-                          ) : `${moistureVal}%`
-                        });
-                      }
-                      const cut1 = displayVal((qp as any).cutting1Raw, qp.cutting1);
-                      const cut2 = displayVal((qp as any).cutting2Raw, qp.cutting2);
-                      if (cut1 && cut2) row1.push({ label: 'Cutting', value: `${cut1}x${cut2}` });
-                      const bend1 = displayVal((qp as any).bend1Raw, qp.bend1);
-                      const bend2 = displayVal((qp as any).bend2Raw, qp.bend2);
-                      if (bend1 && bend2) row1.push({ label: 'Bend', value: `${bend1}x${bend2}` });
-                      const grainsVal = displayVal((qp as any).grainsCountRaw, qp.grainsCount);
-                      if (grainsVal) row1.push({ label: 'Grains Count', value: `(${grainsVal})` });
+                    {((detailEntry as any).godownImageUrl || (detailEntry as any).paddyLotImageUrl) && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+                        {(detailEntry as any).godownImageUrl && (
+                          <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #e2e8f0', background: '#fff' }}>
+                            <div style={{ padding: '6px', background: '#f8fafc', fontSize: '10px', textAlign: 'center', fontWeight: '800', borderBottom: '1px solid #e2e8f0' }}>GODOWN IMAGE</div>
+                            <img src={resolveMediaUrl((detailEntry as any).godownImageUrl)} alt="Godown" style={{ width: '100%', height: '150px', objectFit: 'cover' }} />
+                          </div>
+                        )}
+                        {(detailEntry as any).paddyLotImageUrl && (
+                          <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #e2e8f0', background: '#fff' }}>
+                            <div style={{ padding: '6px', background: '#f8fafc', fontSize: '10px', textAlign: 'center', fontWeight: '800', borderBottom: '1px solid #e2e8f0' }}>LOT IMAGE</div>
+                            <img src={resolveMediaUrl((detailEntry as any).paddyLotImageUrl)} alt="Paddy Lot" style={{ width: '100%', height: '150px', objectFit: 'cover' }} />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
-                      const row2: { label: string; value: React.ReactNode }[] = [];
-                      const mixVal = displayVal((qp as any).mixRaw, qp.mix);
-                      const mixSVal = displayVal((qp as any).mixSRaw, qp.mixS, smixOn);
-                      const mixLVal = displayVal((qp as any).mixLRaw, qp.mixL, lmixOn);
-                      if (mixVal) row2.push({ label: 'Mix', value: mixVal });
-                      if (mixSVal) row2.push({ label: 'S Mix', value: mixSVal });
-                      if (mixLVal) row2.push({ label: 'L Mix', value: mixLVal });
+              <div style={{ display: 'grid', gridTemplateColumns: getQualityAttemptsForEntry(detailEntry as any).length > 1 ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) 340px', gap: '20px', alignItems: 'flex-start' }}>
+                <div style={{ minWidth: 0 }}>
+                  <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px' }}>Quality Parameters</h4>
+                  {(() => {
+                    const qpList = getQualityAttemptsForEntry(detailEntry as any);
+                    if (qpList.length === 0) return <div style={{ color: '#999', textAlign: 'center', padding: '12px', fontSize: '12px' }}>No quality data</div>;
 
-                      const row3: { label: string; value: React.ReactNode }[] = [];
-                      const kanduVal = displayVal((qp as any).kanduRaw, qp.kandu);
-                      const oilVal = displayVal((qp as any).oilRaw, qp.oil);
-                      const skVal = displayVal((qp as any).skRaw, qp.sk);
-                      if (kanduVal) row3.push({ label: 'Kandu', value: kanduVal });
-                      if (oilVal) row3.push({ label: 'Oil', value: oilVal });
-                      if (skVal) row3.push({ label: 'SK', value: skVal });
+                    const displayVal = (rawVal: any, numericVal: any, enabled = true) => {
+                      if (!enabled) return null;
+                      const raw = rawVal != null ? String(rawVal).trim() : '';
+                      if (raw !== '') return raw;
+                      if (numericVal == null || numericVal === '') return null;
+                      const rawNumeric = String(numericVal).trim();
+                      if (!rawNumeric) return null;
+                      const n = Number(rawNumeric);
+                      if (!Number.isFinite(n) || n === 0) return null;
+                      return rawNumeric;
+                    };
+                    const isProvided = (rawVal: any, numericVal: any) => {
+                      const raw = rawVal != null ? String(rawVal).trim() : '';
+                      if (raw !== '') return true;
+                      if (numericVal == null || numericVal === '') return false;
+                      const rawNumeric = String(numericVal).trim();
+                      if (!rawNumeric) return false;
+                      const n = Number(rawNumeric);
+                      return Number.isFinite(n) && n !== 0;
+                    };
+                    const isEnabled = (flag: any, rawVal: any, numericVal: any) => (
+                      flag === true || (flag == null && isProvided(rawVal, numericVal))
+                    );
 
-                      const row4: { label: string; value: React.ReactNode }[] = [];
-                      const wbRVal = displayVal((qp as any).wbRRaw, qp.wbR, wbOn);
-                      const wbBkVal = displayVal((qp as any).wbBkRaw, qp.wbBk, wbOn);
-                      const wbTVal = displayVal((qp as any).wbTRaw, qp.wbT, wbOn);
-                      if (wbRVal) row4.push({ label: 'WB-R', value: wbRVal });
-                      if (wbBkVal) row4.push({ label: 'WB-BK', value: wbBkVal });
-                      if (wbTVal) row4.push({ label: 'WB-T', value: wbTVal });
-                      const smellHas = (qp as any).smellHas ?? (qpList.length === 1 ? (detailEntry as any).smellHas : undefined);
-                      const smellType = (qp as any).smellType ?? (qpList.length === 1 ? (detailEntry as any).smellType : undefined);
-                      if (smellHas || (smellType && String(smellType).trim())) {
-                        row4.push({ label: 'Smell', value: toTitleCase(smellType || 'Yes') });
-                      }
-
-                      const hasPaddyWb = displayVal((qp as any).paddyWbRaw, qp.paddyWb, paddyOn);
-                      if (hasPaddyWb) {
-                        row4.push({
-                          label: 'Paddy WB',
-                          value: (
-                            <span style={{
-                              color: Number(qp.paddyWb) < 50 ? '#d32f2f' : (Number(qp.paddyWb) <= 50.5 ? '#f39c12' : '#1b5e20'),
-                              fontWeight: '800'
-                            }}>
-                              {hasPaddyWb}
-                            </span>
-                          )
-                        });
-                      }
-
+                    const QItem = ({ label, value }: { label: string; value: React.ReactNode }) => {
+                      const isBold = ['Grains Count', 'Paddy WB'].includes(label);
                       return (
-                        <div key={idx} style={qpList.length > 1 ? { background: '#fcfcfc', border: '1px solid #eee', borderRadius: '6px', padding: '12px' } : {}}>
-                          {qpList.length > 1 && (
-                            <div style={{ fontSize: '11px', fontWeight: '800', color: '#e67e22', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                              {qp.attemptNo ? `${qp.attemptNo}${qp.attemptNo === 1 ? 'st' : qp.attemptNo === 2 ? 'nd' : 'th'} Quality` : `${idx + 1}${idx === 0 ? 'st' : idx === 1 ? 'nd' : 'th'} Quality`}
-                            </div>
-                          )}
-                          {row1.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row1.length}, 1fr)`, gap: '8px' }}>{row1.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                          {row2.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row2.length}, 1fr)`, gap: '8px' }}>{row2.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                          {row3.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row3.length}, 1fr)`, gap: '8px' }}>{row3.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                          {row4.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row4.length}, 1fr)`, gap: '8px' }}>{row4.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                          {qp.reportedBy && (
-                            <div style={{ marginTop: '8px' }}>
-                              <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
-                                <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>Sample Reported By</div>
-                                <div style={{ fontSize: '13px', fontWeight: '700', color: '#2c3e50' }}>{toSentenceCase(qp.reportedBy)}</div>
-                              </div>
-                            </div>
-                          )}
+                        <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
+                          <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>{label}</div>
+                          <div style={{ fontSize: '13px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
                         </div>
                       );
-                    })}
-                  </div>
-                );
-              })()}
+                    };
+                    const qualityPhotoUrl = qpList.find((qp: any) => qp?.uploadFileUrl)?.uploadFileUrl;
+                    const hasMultipleAttempts = qpList.length > 1;
+                    const getAttemptLabel = (attemptNo: number, idx: number) => {
+                      const num = attemptNo || idx + 1;
+                      if (num === 1) return '1st Sample';
+                      if (num === 2) return '2nd Sample';
+                      if (num === 3) return '3rd Sample';
+                      return `${num}th Sample`;
+                    };
+
+                    if (hasMultipleAttempts) {
+                      const columns = [
+                        { key: 'reportedBy', label: 'Sample Reported By' },
+                        { key: 'moisture', label: 'Moisture' },
+                        { key: 'cutting', label: 'Cutting' },
+                        { key: 'bend', label: 'Bend' },
+                        { key: 'grainsCount', label: 'Grains Count' },
+                        { key: 'mix', label: 'Mix' },
+                        { key: 'mixS', label: 'S Mix' },
+                        { key: 'mixL', label: 'L Mix' },
+                        { key: 'kandu', label: 'Kandu' },
+                        { key: 'oil', label: 'Oil' },
+                        { key: 'sk', label: 'SK' },
+                        { key: 'wbR', label: 'WB-R' },
+                        { key: 'wbBk', label: 'WB-BK' },
+                        { key: 'wbT', label: 'WB-T' },
+                        { key: 'smell', label: 'Smell' },
+                        { key: 'paddyWb', label: 'Paddy WB' }
+                      ];
+
+                      const getCellValue = (qp: any, key: string) => {
+                        const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
+                        const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
+                        const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
+                        const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
+                        if (key === 'reportedBy') return toTitleCase(qp.reportedBy || '-');
+                        if (key === 'moisture') {
+                          const val = displayVal(qp.moistureRaw, qp.moisture);
+                          return val ? `${val}%` : '-';
+                        }
+                        if (key === 'cutting') {
+                          const cut1 = displayVal(qp.cutting1Raw, qp.cutting1);
+                          const cut2 = displayVal(qp.cutting2Raw, qp.cutting2);
+                          return cut1 && cut2 ? `${cut1}x${cut2}` : '-';
+                        }
+                        if (key === 'bend') {
+                          const bend1 = displayVal(qp.bend1Raw, qp.bend1);
+                          const bend2 = displayVal(qp.bend2Raw, qp.bend2);
+                          return bend1 && bend2 ? `${bend1}x${bend2}` : '-';
+                        }
+                        if (key === 'grainsCount') {
+                          const val = displayVal(qp.grainsCountRaw, qp.grainsCount);
+                          return val ? `(${val})` : '-';
+                        }
+                        if (key === 'mix') return displayVal(qp.mixRaw, qp.mix) || '-';
+                        if (key === 'mixS') return displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-';
+                        if (key === 'mixL') return displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-';
+                        if (key === 'kandu') return displayVal(qp.kanduRaw, qp.kandu) || '-';
+                        if (key === 'oil') return displayVal(qp.oilRaw, qp.oil) || '-';
+                        if (key === 'sk') return displayVal(qp.skRaw, qp.sk) || '-';
+                        if (key === 'wbR') return displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-';
+                        if (key === 'wbBk') return displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-';
+                        if (key === 'wbT') return displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-';
+                        if (key === 'smell') {
+                          const smellHasValue = qp.smellHas ?? (detailEntry as any).smellHas;
+                          const smellTypeValue = qp.smellType ?? (detailEntry as any).smellType;
+                          return smellHasValue ? toTitleCase(smellTypeValue || 'Yes') : '-';
+                        }
+                        if (key === 'paddyWb') return displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-';
+                        return '-';
+                      };
+
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          {qualityPhotoUrl && (
+                            <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px' }}>
+                              <div style={{ fontSize: '11px', fontWeight: '800', color: '#1d4ed8', marginBottom: '8px', textTransform: 'uppercase' }}>Quality Photo</div>
+                              <img
+                                src={resolveMediaUrl(qualityPhotoUrl)}
+                                alt="Quality"
+                                style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e0e0e0' }}
+                              />
+                            </div>
+                          )}
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', minWidth: '1180px', borderCollapse: 'collapse', fontSize: '12px' }}>
+                              <thead>
+                                <tr>
+                                  <th style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'left', whiteSpace: 'nowrap' }}>Sample</th>
+                                  {columns.map((col) => (
+                                    <th key={col.key} style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'center', whiteSpace: 'nowrap' }}>{col.label}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {qpList.map((qp: any, idx: number) => (
+                                  <tr key={`${qp.attemptNo || idx}-row`}>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '6px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                      {getAttemptLabel(qp.attemptNo, idx)}
+                                    </td>
+                                    {columns.map((col) => (
+                                      <td key={`${qp.attemptNo || idx}-${col.key}`} style={{ border: '1px solid #e0e0e0', padding: '6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                        {getCellValue(qp, col.key)}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        {qualityPhotoUrl && (
+                          <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px' }}>
+                            <div style={{ fontSize: '11px', fontWeight: '800', color: '#1d4ed8', marginBottom: '8px', textTransform: 'uppercase' }}>Quality Photo</div>
+                            <img
+                              src={resolveMediaUrl(qualityPhotoUrl)}
+                              alt="Quality"
+                              style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e0e0e0' }}
+                            />
+                          </div>
+                        )}
+                        {qpList.map((qp: any, idx: number) => {
+                          const smixOn = isEnabled(qp.smixEnabled, (qp as any).mixSRaw, qp.mixS);
+                          const lmixOn = isEnabled(qp.lmixEnabled, (qp as any).mixLRaw, qp.mixL);
+                          const paddyOn = isEnabled(qp.paddyWbEnabled, (qp as any).paddyWbRaw, qp.paddyWb);
+                          const wbOn = isProvided((qp as any).wbRRaw, qp.wbR) || isProvided((qp as any).wbBkRaw, qp.wbBk);
+                          const dryOn = isProvided((qp as any).dryMoistureRaw, (qp as any).dryMoisture);
+                          const row1: { label: string; value: React.ReactNode }[] = [];
+                          const moistureVal = displayVal((qp as any).moistureRaw, qp.moisture);
+                          if (moistureVal) {
+                            const dryVal = displayVal((qp as any).dryMoistureRaw, (qp as any).dryMoisture, dryOn);
+                            row1.push({
+                              label: 'Moisture',
+                              value: dryVal ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px' }}>
+                                  <span style={{ color: '#e67e22', fontWeight: '800', fontSize: '11px' }}>{dryVal}%</span>
+                                  <span>{moistureVal}%</span>
+                                </div>
+                              ) : `${moistureVal}%`
+                            });
+                          }
+                          const cut1 = displayVal((qp as any).cutting1Raw, qp.cutting1);
+                          const cut2 = displayVal((qp as any).cutting2Raw, qp.cutting2);
+                          if (cut1 && cut2) row1.push({ label: 'Cutting', value: `${cut1}x${cut2}` });
+                          const bend1 = displayVal((qp as any).bend1Raw, qp.bend1);
+                          const bend2 = displayVal((qp as any).bend2Raw, qp.bend2);
+                          if (bend1 && bend2) row1.push({ label: 'Bend', value: `${bend1}x${bend2}` });
+                          const grainsVal = displayVal((qp as any).grainsCountRaw, qp.grainsCount);
+                          if (grainsVal) row1.push({ label: 'Grains Count', value: `(${grainsVal})` });
+
+                          const row2: { label: string; value: React.ReactNode }[] = [];
+                          const mixVal = displayVal((qp as any).mixRaw, qp.mix);
+                          const mixSVal = displayVal((qp as any).mixSRaw, qp.mixS, smixOn);
+                          const mixLVal = displayVal((qp as any).mixLRaw, qp.mixL, lmixOn);
+                          if (mixVal) row2.push({ label: 'Mix', value: mixVal });
+                          if (mixSVal) row2.push({ label: 'S Mix', value: mixSVal });
+                          if (mixLVal) row2.push({ label: 'L Mix', value: mixLVal });
+
+                          const row3: { label: string; value: React.ReactNode }[] = [];
+                          const kanduVal = displayVal((qp as any).kanduRaw, qp.kandu);
+                          const oilVal = displayVal((qp as any).oilRaw, qp.oil);
+                          const skVal = displayVal((qp as any).skRaw, qp.sk);
+                          if (kanduVal) row3.push({ label: 'Kandu', value: kanduVal });
+                          if (oilVal) row3.push({ label: 'Oil', value: oilVal });
+                          if (skVal) row3.push({ label: 'SK', value: skVal });
+
+                          const row4: { label: string; value: React.ReactNode }[] = [];
+                          const wbRVal = displayVal((qp as any).wbRRaw, qp.wbR, wbOn);
+                          const wbBkVal = displayVal((qp as any).wbBkRaw, qp.wbBk, wbOn);
+                          const wbTVal = displayVal((qp as any).wbTRaw, qp.wbT, wbOn);
+                          if (wbRVal) row4.push({ label: 'WB-R', value: wbRVal });
+                          if (wbBkVal) row4.push({ label: 'WB-BK', value: wbBkVal });
+                          if (wbTVal) row4.push({ label: 'WB-T', value: wbTVal });
+                          const smellHas = (qp as any).smellHas ?? (qpList.length === 1 ? (detailEntry as any).smellHas : undefined);
+                          const smellType = (qp as any).smellType ?? (qpList.length === 1 ? (detailEntry as any).smellType : undefined);
+                          if (smellHas || (smellType && String(smellType).trim())) {
+                            row4.push({ label: 'Smell', value: toTitleCase(smellType || 'Yes') });
+                          }
+
+                          const hasPaddyWb = displayVal((qp as any).paddyWbRaw, qp.paddyWb, paddyOn);
+                          if (hasPaddyWb) {
+                            row4.push({
+                              label: 'Paddy WB',
+                              value: (
+                                <span style={{
+                                  color: Number(qp.paddyWb) < 50 ? '#d32f2f' : (Number(qp.paddyWb) <= 50.5 ? '#f39c12' : '#1b5e20'),
+                                  fontWeight: '800'
+                                }}>
+                                  {hasPaddyWb}
+                                </span>
+                              )
+                            });
+                          }
+
+                          return (
+                            <div key={idx} style={qpList.length > 1 ? { background: '#fcfcfc', border: '1px solid #eee', borderRadius: '6px', padding: '12px' } : {}}>
+                              {qpList.length > 1 && (
+                                <div style={{ fontSize: '11px', fontWeight: '800', color: '#e67e22', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                  {qp.attemptNo ? `${qp.attemptNo}${qp.attemptNo === 1 ? 'st' : qp.attemptNo === 2 ? 'nd' : 'th'} Quality` : `${idx + 1}${idx === 0 ? 'st' : idx === 1 ? 'nd' : 'th'} Quality`}
+                                </div>
+                              )}
+                              {row1.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row1.length}, 1fr)`, gap: '8px' }}>{row1.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                              {row2.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row2.length}, 1fr)`, gap: '8px' }}>{row2.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                              {row3.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row3.length}, 1fr)`, gap: '8px' }}>{row3.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                              {row4.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row4.length}, 1fr)`, gap: '8px' }}>{row4.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                              {qp.reportedBy && (
+                                <div style={{ marginTop: '8px' }}>
+                                  <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>Sample Reported By</div>
+                                    <div style={{ fontSize: '13px', fontWeight: '700', color: '#2c3e50' }}>{toSentenceCase(qp.reportedBy)}</div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#1565c0', borderBottom: '2px solid #1565c0', paddingBottom: '6px' }}>Cooking History & Remarks</h4>
-              {(() => {
-                const cr = detailEntry.cookingReport;
-                const normalizeCookingStatus = (status?: string | null) => {
-                  const normalized = String(status || '').trim().toUpperCase();
-                  if (normalized === 'PASS' || normalized === 'OK') return 'Pass';
-                  if (normalized === 'MEDIUM') return 'Medium';
-                  if (normalized === 'FAIL') return 'Fail';
-                  if (normalized === 'RECHECK') return 'Recheck';
-                  if (normalized === 'PENDING') return 'Pending';
-                  return normalized ? toTitleCase(normalized.toLowerCase()) : 'Pending';
-                };
-                const toTs = (value: any) => {
-                  if (!value) return 0;
-                  const ts = new Date(value).getTime();
-                  return Number.isFinite(ts) ? ts : 0;
-                };
-                const historyRaw = Array.isArray(cr?.history) ? cr!.history : [];
-                const history = [...historyRaw].sort((a: any, b: any) => toTs(a?.date || a?.updatedAt || a?.createdAt || '') - toTs(b?.date || b?.updatedAt || b?.createdAt || ''));
-                const rows = (() => {
-                  const result: any[] = [];
-                  let pendingDone: any = null;
+                  {(() => {
+                    const cr = detailEntry.cookingReport;
+                    const normalizeCookingStatus = (status?: string | null) => {
+                      const normalized = String(status || '').trim().toUpperCase();
+                      if (normalized === 'PASS' || normalized === 'OK') return 'Pass';
+                      if (normalized === 'MEDIUM') return 'Medium';
+                      if (normalized === 'FAIL') return 'Fail';
+                      if (normalized === 'RECHECK') return 'Recheck';
+                      if (normalized === 'PENDING') return 'Pending';
+                      return normalized ? toTitleCase(normalized.toLowerCase()) : 'Pending';
+                    };
+                    const toTs = (value: any) => {
+                      if (!value) return 0;
+                      const ts = new Date(value).getTime();
+                      return Number.isFinite(ts) ? ts : 0;
+                    };
+                    const historyRaw = Array.isArray(cr?.history) ? cr!.history : [];
+                    const history = [...historyRaw].sort((a: any, b: any) => toTs(a?.date || a?.updatedAt || a?.createdAt || '') - toTs(b?.date || b?.updatedAt || b?.createdAt || ''));
+                    const rows = (() => {
+                      const result: any[] = [];
+                      let pendingDone: any = null;
 
-                  history.forEach((h: any) => {
-                    const hasStatus = !!h?.status;
-                    const doneByValue = String(h?.cookingDoneBy || '').trim();
-                    const doneDateValue = h?.doneDate || h?.cookingDoneAt || h?.submittedAt || h?.date || null;
+                      history.forEach((h: any) => {
+                        const hasStatus = !!h?.status;
+                        const doneByValue = String(h?.cookingDoneBy || '').trim();
+                        const doneDateValue = h?.doneDate || h?.cookingDoneAt || h?.submittedAt || h?.date || null;
 
-                    if (!hasStatus && doneByValue) {
-                      pendingDone = {
-                        doneBy: doneByValue,
-                        doneDate: doneDateValue,
-                        remarks: String(h?.remarks || '').trim()
-                      };
-                      return;
-                    }
+                        if (!hasStatus && doneByValue) {
+                          pendingDone = {
+                            doneBy: doneByValue,
+                            doneDate: doneDateValue,
+                            remarks: String(h?.remarks || '').trim()
+                          };
+                          return;
+                        }
 
-                    if (hasStatus) {
-                      result.push({
-                        status: normalizeCookingStatus(h.status),
-                        doneBy: pendingDone?.doneBy || doneByValue || String(cr?.cookingDoneBy || '').trim(),
-                        doneDate: pendingDone?.doneDate || doneDateValue,
-                        approvedBy: String(h?.approvedBy || h?.cookingApprovedBy || cr?.cookingApprovedBy || '').trim(),
-                        approvedDate: h?.approvedDate || h?.cookingApprovedAt || h?.date || null,
-                        remarks: String(h?.remarks || '').trim()
+                        if (hasStatus) {
+                          result.push({
+                            status: normalizeCookingStatus(h.status),
+                            doneBy: pendingDone?.doneBy || doneByValue || String(cr?.cookingDoneBy || '').trim(),
+                            doneDate: pendingDone?.doneDate || doneDateValue,
+                            approvedBy: String(h?.approvedBy || h?.cookingApprovedBy || cr?.cookingApprovedBy || '').trim(),
+                            approvedDate: h?.approvedDate || h?.cookingApprovedAt || h?.date || null,
+                            remarks: String(h?.remarks || '').trim()
+                          });
+                          pendingDone = null;
+                        }
                       });
-                      pendingDone = null;
-                    }
-                  });
 
-                  if (result.length === 0 && cr?.status) {
-                    result.push({
-                      status: normalizeCookingStatus(cr.status),
-                      doneBy: String(cr.cookingDoneBy || '').trim(),
-                      doneDate: (cr as any)?.doneDate || (cr as any)?.cookingDoneAt || (cr as any)?.date || cr.updatedAt || cr.createdAt || null,
-                      approvedBy: String(cr.cookingApprovedBy || '').trim(),
-                      approvedDate: (cr as any)?.approvedDate || (cr as any)?.cookingApprovedAt || (cr as any)?.date || cr.updatedAt || cr.createdAt || null,
-                      remarks: String(cr.remarks || '').trim()
-                    });
-                  }
+                      if (result.length === 0 && cr?.status) {
+                        result.push({
+                          status: normalizeCookingStatus(cr.status),
+                          doneBy: String(cr.cookingDoneBy || '').trim(),
+                          doneDate: (cr as any)?.doneDate || (cr as any)?.cookingDoneAt || (cr as any)?.date || cr.updatedAt || cr.createdAt || null,
+                          approvedBy: String(cr.cookingApprovedBy || '').trim(),
+                          approvedDate: (cr as any)?.approvedDate || (cr as any)?.cookingApprovedAt || (cr as any)?.date || cr.updatedAt || cr.createdAt || null,
+                          remarks: String(cr.remarks || '').trim()
+                        });
+                      }
 
-                  if (pendingDone) {
-                    result.push({
-                      status: 'Pending',
-                      doneBy: pendingDone.doneBy,
-                      doneDate: pendingDone.doneDate,
-                      approvedBy: '',
-                      approvedDate: null,
-                      remarks: pendingDone.remarks
-                    });
-                  }
+                      if (pendingDone) {
+                        result.push({
+                          status: 'Pending',
+                          doneBy: pendingDone.doneBy,
+                          doneDate: pendingDone.doneDate,
+                          approvedBy: '',
+                          approvedDate: null,
+                          remarks: pendingDone.remarks
+                        });
+                      }
 
-                  return result;
-                })();
+                      return result;
+                    })();
 
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {rows.length > 0 ? (
-                      <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '10px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '800', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #e2e8f0', paddingBottom: '6px' }}>Cooking Activity Log</div>
-                        <div style={{ overflowX: 'auto' }}>
-                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                            <thead>
-                              <tr style={{ color: '#475569', borderBottom: '2px solid #f1f5f9' }}>
-                                <th style={{ textAlign: 'center', padding: '8px 4px', fontWeight: '800', width: '40px', border: '1px solid #e2e8f0' }}>No</th>
-                                <th style={{ textAlign: 'left', padding: '8px 4px', fontWeight: '800', border: '1px solid #e2e8f0' }}>Status</th>
-                                <th style={{ textAlign: 'left', padding: '8px 4px', fontWeight: '800', border: '1px solid #e2e8f0' }}>Done By</th>
-                                <th style={{ textAlign: 'left', padding: '8px 4px', fontWeight: '800', border: '1px solid #e2e8f0' }}>Approved By</th>
-                                <th style={{ textAlign: 'center', padding: '8px 4px', fontWeight: '800', width: '44px', border: '1px solid #e2e8f0' }}>Rem</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {rows.map((h: any, idx: number) => {
-                                const statusString = String(h.status || 'Pending');
-                                const statusColor = statusString === 'Pass' ? '#166534' : statusString === 'Fail' ? '#991b1b' : statusString === 'Recheck' ? '#1565c0' : statusString === 'Medium' ? '#d97706' : '#475569';
-                                const statusBg = statusString === 'Pass' ? '#dcfce7' : statusString === 'Fail' ? '#fee2e2' : statusString === 'Recheck' ? '#e0f2fe' : statusString === 'Medium' ? '#ffedd5' : '#f1f5f9';
-                                return (
-                                  <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background-color 0.2s' }}>
-                                    <td style={{ textAlign: 'center', padding: '8px 4px', fontWeight: '700', color: '#64748b', border: '1px solid #e2e8f0' }}>{idx + 1}.</td>
-                                    <td style={{ padding: '8px 4px', border: '1px solid #e2e8f0' }}>
-                                      <span style={{ background: statusBg, color: statusColor, padding: '2px 8px', borderRadius: '12px', fontSize: '10px', fontWeight: '800' }}>
-                                        {statusString}
-                                      </span>
-                                    </td>
-                                    <td style={{ padding: '8px 4px', color: '#334155', border: '1px solid #e2e8f0' }}>
-                                      <div style={{ fontWeight: '700', fontSize: '13px' }}>{h.doneBy ? getCollectorLabel(h.doneBy, supervisors) : '-'}</div>
-                                      <div style={{ fontSize: '10px', color: '#64748b', fontWeight: '500', marginTop: '2px' }}>{formatShortDateTime(h.doneDate) || '-'}</div>
-                                    </td>
-                                    <td style={{ padding: '8px 4px', color: '#334155', border: '1px solid #e2e8f0' }}>
-                                      <div style={{ fontWeight: '700', fontSize: '13px' }}>{h.approvedBy ? getCollectorLabel(h.approvedBy, supervisors) : '-'}</div>
-                                      <div style={{ fontSize: '10px', color: '#64748b', fontWeight: '500', marginTop: '2px' }}>{formatShortDateTime(h.approvedDate) || '-'}</div>
-                                    </td>
-                                    <td style={{ textAlign: 'center', padding: '8px 4px', border: '1px solid #e2e8f0' }}>
-                                      {h.remarks ? (
-                                        <button
-                                          onClick={() => setRemarksPopup({ isOpen: true, text: h.remarks || '' })}
-                                          style={{ border: '1px solid #90caf9', background: '#e3f2fd', color: '#1565c0', borderRadius: '6px', padding: '2px 8px', cursor: 'pointer', fontSize: '11px', fontWeight: '700' }}
-                                          title="View Remarks"
-                                        >
-                                          🔍
-                                        </button>
-                                      ) : '-'}
-                                    </td>
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {rows.length > 0 ? (
+                          <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '10px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+                            <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '800', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #e2e8f0', paddingBottom: '6px' }}>Cooking Activity Log</div>
+                            <div style={{ overflowX: 'auto' }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                <thead>
+                                  <tr style={{ color: '#475569', borderBottom: '2px solid #f1f5f9' }}>
+                                    <th style={{ textAlign: 'center', padding: '8px 4px', fontWeight: '800', width: '40px', border: '1px solid #e2e8f0' }}>No</th>
+                                    <th style={{ textAlign: 'left', padding: '8px 4px', fontWeight: '800', border: '1px solid #e2e8f0' }}>Status</th>
+                                    <th style={{ textAlign: 'left', padding: '8px 4px', fontWeight: '800', border: '1px solid #e2e8f0' }}>Done By</th>
+                                    <th style={{ textAlign: 'left', padding: '8px 4px', fontWeight: '800', border: '1px solid #e2e8f0' }}>Approved By</th>
+                                    <th style={{ textAlign: 'center', padding: '8px 4px', fontWeight: '800', width: '44px', border: '1px solid #e2e8f0' }}>Rem</th>
                                   </tr>
-                                );
-                              })}
+                                </thead>
+                                <tbody>
+                                  {rows.map((h: any, idx: number) => {
+                                    const statusString = String(h.status || 'Pending');
+                                    const statusColor = statusString === 'Pass' ? '#166534' : statusString === 'Fail' ? '#991b1b' : statusString === 'Recheck' ? '#1565c0' : statusString === 'Medium' ? '#d97706' : '#475569';
+                                    const statusBg = statusString === 'Pass' ? '#dcfce7' : statusString === 'Fail' ? '#fee2e2' : statusString === 'Recheck' ? '#e0f2fe' : statusString === 'Medium' ? '#ffedd5' : '#f1f5f9';
+                                    return (
+                                      <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background-color 0.2s' }}>
+                                        <td style={{ textAlign: 'center', padding: '8px 4px', fontWeight: '700', color: '#64748b', border: '1px solid #e2e8f0' }}>{idx + 1}.</td>
+                                        <td style={{ padding: '8px 4px', border: '1px solid #e2e8f0' }}>
+                                          <span style={{ background: statusBg, color: statusColor, padding: '2px 8px', borderRadius: '12px', fontSize: '10px', fontWeight: '800' }}>
+                                            {statusString}
+                                          </span>
+                                        </td>
+                                        <td style={{ padding: '8px 4px', color: '#334155', border: '1px solid #e2e8f0' }}>
+                                          <div style={{ fontWeight: '700', fontSize: '13px' }}>{h.doneBy ? getCollectorLabel(h.doneBy, supervisors) : '-'}</div>
+                                          <div style={{ fontSize: '10px', color: '#64748b', fontWeight: '500', marginTop: '2px' }}>{formatShortDateTime(h.doneDate) || '-'}</div>
+                                        </td>
+                                        <td style={{ padding: '8px 4px', color: '#334155', border: '1px solid #e2e8f0' }}>
+                                          <div style={{ fontWeight: '700', fontSize: '13px' }}>{h.approvedBy ? getCollectorLabel(h.approvedBy, supervisors) : '-'}</div>
+                                          <div style={{ fontSize: '10px', color: '#64748b', fontWeight: '500', marginTop: '2px' }}>{formatShortDateTime(h.approvedDate) || '-'}</div>
+                                        </td>
+                                        <td style={{ textAlign: 'center', padding: '8px 4px', border: '1px solid #e2e8f0' }}>
+                                          {h.remarks ? (
+                                            <button
+                                              onClick={() => setRemarksPopup({ isOpen: true, text: h.remarks || '' })}
+                                              style={{ border: '1px solid #90caf9', background: '#e3f2fd', color: '#1565c0', borderRadius: '6px', padding: '2px 8px', cursor: 'pointer', fontSize: '11px', fontWeight: '700' }}
+                                              title="View Remarks"
+                                            >
+                                              🔍
+                                            </button>
+                                          ) : '-'}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
 
-                            </tbody>
-                          </table>
-                        </div>
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ background: '#fff9f0', padding: '10px', borderRadius: '8px', border: '1px solid #ffe0b2', textAlign: 'center', fontSize: '12px', color: '#e65100' }}>
+                            No cooking history recorded yet.
+                          </div>
+                        )}
                       </div>
-                    ) : (
-                      <div style={{ background: '#fff9f0', padding: '10px', borderRadius: '8px', border: '1px solid #ffe0b2', textAlign: 'center', fontSize: '12px', color: '#e65100' }}>
-                        No cooking history recorded yet.
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
+                    );
+                  })()}
                 </div>
               </div>
 

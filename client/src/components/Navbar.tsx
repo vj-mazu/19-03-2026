@@ -305,6 +305,7 @@ const Navbar: React.FC = () => {
   const location = useLocation();
   const [pendingCount, setPendingCount] = useState(0);
   const [resampleCount, setResampleCount] = useState(0);
+  const [editApprovalCount, setEditApprovalCount] = useState(0);
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [workflowDropdownOpen, setWorkflowDropdownOpen] = useState(false);
   const [ledgersDropdownOpen, setLedgersDropdownOpen] = useState(false);
@@ -337,11 +338,14 @@ const Navbar: React.FC = () => {
     if (user && (user.role === 'manager' || user.role === 'admin')) {
       fetchPendingCount();
       fetchResampleCount();
+      fetchEditApprovalCount();
       const interval = setInterval(fetchPendingCount, 30000);
       const resampleInterval = setInterval(fetchResampleCount, 30000);
+      const editApprovalInterval = setInterval(fetchEditApprovalCount, 30000);
       return () => {
         clearInterval(interval);
         clearInterval(resampleInterval);
+        clearInterval(editApprovalInterval);
       };
     }
   }, [user]);
@@ -369,6 +373,16 @@ const Navbar: React.FC = () => {
       }
     } catch (error) {
       console.error('Error fetching resample count:', error);
+    }
+  };
+
+  const fetchEditApprovalCount = async () => {
+    try {
+      const response = await axios.get('/sample-entries/tabs/edit-approvals');
+      const data = response.data as { entries?: unknown[] };
+      setEditApprovalCount(Array.isArray(data.entries) ? data.entries.length : 0);
+    } catch (error) {
+      console.error('Error fetching edit approval count:', error);
     }
   };
 
@@ -417,6 +431,7 @@ const Navbar: React.FC = () => {
               <NavLink to="/paddy-sample-reports" $active={isActive('/paddy-sample-reports') || isActive('/owner-sample-reports')}>
                 Paddy Sample Reports
                 {resampleCount > 0 && <ResampleBadge>{resampleCount}</ResampleBadge>}
+                {editApprovalCount > 0 && <NotificationBadge>{editApprovalCount}</NotificationBadge>}
               </NavLink>
               <NavLink to="/rice-sample-reports" $active={isActive('/rice-sample-reports')}>Rice Sample Reports</NavLink>
               <NavLink to="/sample-entry-ledger" $active={isActive('/sample-entry-ledger')}>Paddy Sample Book</NavLink>
@@ -427,6 +442,7 @@ const Navbar: React.FC = () => {
               <NavLink to="/paddy-sample-reports" $active={isActive('/paddy-sample-reports') || isActive('/owner-sample-reports')}>
                 Paddy Sample Reports
                 {resampleCount > 0 && <ResampleBadge>{resampleCount}</ResampleBadge>}
+                {editApprovalCount > 0 && <NotificationBadge>{editApprovalCount}</NotificationBadge>}
               </NavLink>
               <NavLink to="/rice-sample-reports" $active={isActive('/rice-sample-reports')}>Rice Sample Reports</NavLink>
               <NavLink to="/arrivals" $active={isActive('/arrivals')}>Arrivals</NavLink>

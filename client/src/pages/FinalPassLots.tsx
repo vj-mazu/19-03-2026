@@ -403,7 +403,7 @@ const getResampleAssignmentTimeline = (entry: any) => {
   if (normalized.length === 0) {
     const fallbackName = String(entry?.sampleCollectedBy || '').trim();
     if (fallbackName) {
-      normalized.push({ name: fallbackName, date: entry?.lotSelectionAt || null });
+      normalized.push({ name: fallbackName, date: entry?.updatedAt || entry?.lotSelectionAt || entry?.entryDate || null });
     }
   }
   return normalized;
@@ -501,6 +501,7 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
 
   const [finalPassView, setFinalPassView] = useState<'FINAL_PASS' | 'RESAMPLE_ALLOTMENT'>('FINAL_PASS');
   const [filtersVisible, setFiltersVisible] = useState(false);
+  const [resampleAssignmentCount, setResampleAssignmentCount] = useState(0);
 
   // Server-side Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -517,11 +518,33 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
     loadEntries();
   }, [currentPage]);
 
+  useEffect(() => {
+    if (isRiceMode) return;
+    const loadResampleAssignmentCount = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await axios.get(`${API_URL}/sample-entries/tabs/resample-assignments`, {
+          params: { page: 1, pageSize: 1, entryType, excludeEntryType, t: Date.now() },
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = response.data as any;
+        if (typeof data.total === 'number') {
+          setResampleAssignmentCount(data.total);
+        } else {
+          setResampleAssignmentCount(Array.isArray(data.entries) ? data.entries.length : 0);
+        }
+      } catch (error) {
+        console.error('Error loading resample assignment count:', error);
+      }
+    };
+    loadResampleAssignmentCount();
+  }, [entryType, excludeEntryType, isRiceMode]);
+
   const loadEntries = async (fB?: string, fV?: string, fFrom?: string, fTo?: string) => {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const params: any = { page: currentPage, pageSize };
+      const params: any = { page: currentPage, pageSize, t: Date.now() };
 
       const b = fB !== undefined ? fB : filterBroker;
       const v = fV !== undefined ? fV : filterVariety;
@@ -981,7 +1004,7 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
               cursor: 'pointer'
             }}
           >
-            Resample Allotment
+            Resample Allotment{resampleAssignmentCount > 0 ? ` (${resampleAssignmentCount})` : ''}
           </button>
         </div>
       )}

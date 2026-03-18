@@ -187,6 +187,78 @@ const SampleEntry = sequelize.define('SampleEntry', {
     allowNull: false,
     defaultValue: 0,
     field: 'staff_bags_edits'
+  },
+  staffEntryEditAllowance: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 1,
+    field: 'staff_entry_edit_allowance'
+  },
+  staffQualityEditAllowance: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 1,
+    field: 'staff_quality_edit_allowance'
+  },
+  entryEditApprovalStatus: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    field: 'entry_edit_approval_status'
+  },
+  entryEditApprovalReason: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    field: 'entry_edit_approval_reason'
+  },
+  entryEditApprovalRequestedBy: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    field: 'entry_edit_approval_requested_by'
+  },
+  entryEditApprovalRequestedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    field: 'entry_edit_approval_requested_at'
+  },
+  entryEditApprovalApprovedBy: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    field: 'entry_edit_approval_approved_by'
+  },
+  entryEditApprovalApprovedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    field: 'entry_edit_approval_approved_at'
+  },
+  qualityEditApprovalStatus: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    field: 'quality_edit_approval_status'
+  },
+  qualityEditApprovalReason: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    field: 'quality_edit_approval_reason'
+  },
+  qualityEditApprovalRequestedBy: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    field: 'quality_edit_approval_requested_by'
+  },
+  qualityEditApprovalRequestedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    field: 'quality_edit_approval_requested_at'
+  },
+  qualityEditApprovalApprovedBy: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    field: 'quality_edit_approval_approved_by'
+  },
+  qualityEditApprovalApprovedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    field: 'quality_edit_approval_approved_at'
   }
 }, {
   tableName: 'sample_entries',

@@ -61,6 +61,10 @@ const normalizePaymentValue = (value, fallback = 15) => {
   const parsed = toNumberOrDefault(value, fallback);
   return Math.max(0, parsed);
 };
+const toTitleCaseWords = (value) => String(value || '')
+  .toLowerCase()
+  .replace(/\b\w/g, (char) => char.toUpperCase())
+  .trim();
 const toTimeValue = (value) => {
   if (!value) return 0;
   const time = new Date(value).getTime();
@@ -99,6 +103,39 @@ const hasQualitySnapshot = (attempt = {}) => {
     isProvidedAlphaValue(attempt.skRaw, attempt.sk);
 
   return hasMoisture && (hasGrains || hasDetailedQuality);
+};
+const hasAnyDetailedQuality = (attempt = {}) => (
+  isProvidedNumericValue(attempt.cutting1Raw, attempt.cutting1) ||
+  isProvidedNumericValue(attempt.cutting2Raw, attempt.cutting2) ||
+  isProvidedNumericValue(attempt.bend1Raw, attempt.bend1) ||
+  isProvidedNumericValue(attempt.bend2Raw, attempt.bend2) ||
+  isProvidedAlphaValue(attempt.mixRaw, attempt.mix) ||
+  isProvidedAlphaValue(attempt.mixSRaw, attempt.mixS) ||
+  isProvidedAlphaValue(attempt.mixLRaw, attempt.mixL) ||
+  isProvidedAlphaValue(attempt.kanduRaw, attempt.kandu) ||
+  isProvidedAlphaValue(attempt.oilRaw, attempt.oil) ||
+  isProvidedAlphaValue(attempt.skRaw, attempt.sk)
+);
+const hasFullQualitySnapshot = (attempt = {}) => {
+  const hasMoisture = isProvidedNumericValue(attempt.moistureRaw, attempt.moisture);
+  const hasGrains = isProvidedNumericValue(attempt.grainsCountRaw, attempt.grainsCount);
+  return hasMoisture
+    && hasGrains
+    && isProvidedNumericValue(attempt.cutting1Raw, attempt.cutting1)
+    && isProvidedNumericValue(attempt.cutting2Raw, attempt.cutting2)
+    && isProvidedNumericValue(attempt.bend1Raw, attempt.bend1)
+    && isProvidedNumericValue(attempt.bend2Raw, attempt.bend2)
+    && isProvidedAlphaValue(attempt.mixRaw, attempt.mix)
+    && isProvidedAlphaValue(attempt.kanduRaw, attempt.kandu)
+    && isProvidedAlphaValue(attempt.oilRaw, attempt.oil)
+    && isProvidedAlphaValue(attempt.skRaw, attempt.sk);
+};
+const hasSampleBookReadySnapshot = (attempt = {}) => {
+  const hasMoisture = isProvidedNumericValue(attempt.moistureRaw, attempt.moisture);
+  const hasGrains = isProvidedNumericValue(attempt.grainsCountRaw, attempt.grainsCount);
+  if (!hasMoisture || !hasGrains) return false;
+  if (hasFullQualitySnapshot(attempt)) return true;
+  return !hasAnyDetailedQuality(attempt);
 };
 
 const getOfferLabel = (key) => `Offer ${OFFER_KEYS.indexOf(key) + 1}`;
@@ -359,6 +396,18 @@ class SampleEntryService {
       } else {
         entryData.workflowStatus = 'STAFF_ENTRY';
       }
+      if (entryData.location !== undefined) {
+        entryData.location = toTitleCaseWords(entryData.location);
+      }
+      if (entryData.partyName !== undefined) {
+        entryData.partyName = toTitleCaseWords(entryData.partyName);
+      }
+      if (entryData.variety !== undefined) {
+        entryData.variety = toTitleCaseWords(entryData.variety);
+      }
+      if (entryData.brokerName !== undefined) {
+        entryData.brokerName = toTitleCaseWords(entryData.brokerName);
+      }
       entryData.createdByUserId = userId;
 
       const entry = await SampleEntryRepository.create(entryData);
@@ -411,8 +460,15 @@ class SampleEntryService {
           const attempts = Array.isArray(entry.qualityAttemptDetails) ? entry.qualityAttemptDetails : [];
           return attempts.some((attempt) => {
             const attemptTime = toTimeValue(attempt?.updatedAt || attempt?.createdAt);
-            return attemptTime > lotSelectionAt && hasQualitySnapshot(attempt);
+            return attemptTime > lotSelectionAt && hasSampleBookReadySnapshot(attempt);
           });
+        });
+      }
+      if (requestedStatus === 'COOKING_BOOK') {
+        result.entries = result.entries.filter((entry) => {
+          const decision = String(entry.lotSelectionDecision || '').toUpperCase();
+          const isResample = decision === 'FAIL' || Number(entry.qualityReportAttempts) > 1;
+          return !isResample;
         });
       }
       if (requestedStatus === 'COOKING_BOOK' || requestedStatus === 'RESAMPLE_COOKING_BOOK') {
@@ -420,13 +476,11 @@ class SampleEntryService {
       }
       if (requestedStatus === 'RESAMPLE_COOKING_BOOK') {
         result.entries = result.entries.filter((entry) => {
-          const assignedUser = String(entry.sampleCollectedBy || '').trim();
-          if (!assignedUser) return false;
-          const lotSelectionAt = entry.lotSelectionAt ? new Date(entry.lotSelectionAt).getTime() : 0;
-          if (!lotSelectionAt) return false;
-          const qualityUpdatedAt = entry.qualityParameters?.updatedAt || entry.qualityParameters?.createdAt || null;
-          const qualityTime = qualityUpdatedAt ? new Date(qualityUpdatedAt).getTime() : 0;
-          return qualityTime >= lotSelectionAt;
+          if (String(entry.workflowStatus || '').toUpperCase() !== 'COOKING_REPORT') return false;
+
+          const decision = String(entry.lotSelectionDecision || '').toUpperCase();
+          const isResample = decision === 'FAIL' || (decision === 'PASS_WITH_COOKING' && Number(entry.qualityReportAttempts) > 1);
+          return isResample;
         });
       }
     }
@@ -485,12 +539,24 @@ class SampleEntryService {
         });
 
         if (changedFields.length > 0) {
-          if (currentEntry.staffPartyNameEdits >= 1) {
+          const allowedEntryEdits = Math.max(1, Number(currentEntry.staffEntryEditAllowance || 1));
+          if (Number(currentEntry.staffPartyNameEdits || 0) >= allowedEntryEdits) {
             throw new Error('This entry can only be edited once by staff. Please contact admin/manager for further changes.');
           }
           updates.staffPartyNameEdits = (currentEntry.staffPartyNameEdits || 0) + 1;
+          updates.entryEditApprovalStatus = null;
+          updates.entryEditApprovalApprovedBy = null;
+          updates.entryEditApprovalApprovedAt = null;
+          updates.entryEditApprovalReason = null;
+          updates.entryEditApprovalRequestedBy = null;
+          updates.entryEditApprovalRequestedAt = null;
         }
       }
+
+      if (updates.location !== undefined) updates.location = toTitleCaseWords(updates.location);
+      if (updates.partyName !== undefined) updates.partyName = toTitleCaseWords(updates.partyName);
+      if (updates.variety !== undefined) updates.variety = toTitleCaseWords(updates.variety);
+      if (updates.brokerName !== undefined) updates.brokerName = toTitleCaseWords(updates.brokerName);
 
       const updatedEntry = await SampleEntryRepository.update(id, updates);
 

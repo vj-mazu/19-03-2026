@@ -229,11 +229,11 @@ class SampleEntryRepository {
         ]
       };
     } else if (requestedStatus === 'RESAMPLE_COOKING_BOOK') {
-      // Resamples appear immediately in cooking book to allow concurrent work
-      where.workflowStatus = {
-        [Op.in]: ['STAFF_ENTRY', 'QUALITY_CHECK', 'COOKING_REPORT', 'LOT_ALLOTMENT']
-      };
-      where.lotSelectionDecision = 'FAIL';
+      // Resample cooking: show entries that went through resample flow.
+      // After resample Pass, decision changes from FAIL to PASS_WITH_COOKING.
+      // We fetch both, and rely on SampleEntryService.js to filter out non-resample entries.
+      where.workflowStatus = 'COOKING_REPORT';
+      where.lotSelectionDecision = { [Op.in]: ['FAIL', 'PASS_WITH_COOKING'] };
     } else if (requestedStatus === 'PENDING_LOT_SELECTION') {
       where.workflowStatus = { [Op.in]: ['QUALITY_CHECK', 'LOT_SELECTION'] };
     } else if (requestedStatus === 'MILL_SAMPLE') {

@@ -49,6 +49,12 @@ const SampleEntryPage: React.FC<{
   const [qualityUsers, setQualityUsers] = useState<string[]>([]);
   const [photoOnlyEntry, setPhotoOnlyEntry] = useState<SampleEntry | null>(null);
   const [showPhotoOnlyModal, setShowPhotoOnlyModal] = useState(false);
+  const [approvalRequestModal, setApprovalRequestModal] = useState<{
+    isOpen: boolean;
+    entry: SampleEntry | null;
+    type: 'entry' | 'quality';
+    reason: string;
+  }>({ isOpen: false, entry: null, type: 'entry', reason: '' });
   const submissionLocksRef = useRef<Set<string>>(new Set());
   const loadDropdownDataRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const loadEntriesRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -63,6 +69,13 @@ const SampleEntryPage: React.FC<{
     const str = typeof value === 'string' ? value.trim() : '';
     if (!str) return '';
     return str.toLowerCase().replace(/(?:^|\s)\S/g, c => c.toUpperCase());
+  };
+  const resolveMediaUrl = (value?: string | null) => {
+    const url = String(value || '').trim();
+    if (!url) return '';
+    if (/^https?:\/\//i.test(url)) return url;
+    const baseUrl = API_URL.replace(/\/api\/?$/, '');
+    return url.startsWith('/') ? `${baseUrl}${url}` : `${baseUrl}/${url}`;
   };
   const getCollectorLabel = (value?: string | null) => {
     const raw = typeof value === 'string' ? value.trim() : '';
@@ -128,6 +141,14 @@ const SampleEntryPage: React.FC<{
     const num = Number(valueVal);
     return Number.isFinite(num) && num > 0;
   };
+  const hasAlphaOrPositiveValue = (val: any) => {
+    if (val === null || val === undefined || val === '') return false;
+    const raw = String(val).trim();
+    if (!raw) return false;
+    if (/[a-zA-Z]/.test(raw)) return true;
+    const num = parseFloat(raw);
+    return Number.isFinite(num);
+  };
   const isProvidedAlphaValue = (rawVal: any, valueVal: any) => {
     const raw = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : '';
     if (raw !== '') return true;
@@ -148,6 +169,35 @@ const SampleEntryPage: React.FC<{
 
     return hasMoisture && (hasGrains || hasDetailedQuality);
   };
+  const hasAnyDetailedQuality = (attempt: any) => (
+    isProvidedNumericValue(attempt?.cutting1Raw, attempt?.cutting1)
+    || isProvidedNumericValue(attempt?.cutting2Raw, attempt?.cutting2)
+    || isProvidedNumericValue(attempt?.bend1Raw, attempt?.bend1)
+    || isProvidedNumericValue(attempt?.bend2Raw, attempt?.bend2)
+    || isProvidedAlphaValue(attempt?.mixRaw, attempt?.mix)
+    || isProvidedAlphaValue(attempt?.mixSRaw, attempt?.mixS)
+    || isProvidedAlphaValue(attempt?.mixLRaw, attempt?.mixL)
+    || isProvidedAlphaValue(attempt?.kanduRaw, attempt?.kandu)
+    || isProvidedAlphaValue(attempt?.oilRaw, attempt?.oil)
+    || isProvidedAlphaValue(attempt?.skRaw, attempt?.sk)
+  );
+  const hasFullQualitySnapshot = (attempt: any) => (
+    isProvidedNumericValue(attempt?.moistureRaw, attempt?.moisture)
+    && isProvidedNumericValue(attempt?.grainsCountRaw, attempt?.grainsCount)
+    && isProvidedNumericValue(attempt?.cutting1Raw, attempt?.cutting1)
+    && isProvidedNumericValue(attempt?.cutting2Raw, attempt?.cutting2)
+    && isProvidedNumericValue(attempt?.bend1Raw, attempt?.bend1)
+    && isProvidedNumericValue(attempt?.bend2Raw, attempt?.bend2)
+    && isProvidedAlphaValue(attempt?.mixRaw, attempt?.mix)
+    && isProvidedAlphaValue(attempt?.kanduRaw, attempt?.kandu)
+    && isProvidedAlphaValue(attempt?.oilRaw, attempt?.oil)
+    && isProvidedAlphaValue(attempt?.skRaw, attempt?.sk)
+  );
+  const hasSampleBookReadySnapshot = (attempt: any) => (
+    isProvidedNumericValue(attempt?.moistureRaw, attempt?.moisture)
+    && isProvidedNumericValue(attempt?.grainsCountRaw, attempt?.grainsCount)
+    && (hasFullQualitySnapshot(attempt) || !hasAnyDetailedQuality(attempt))
+  );
   const getQualityAttemptsForEntry = (entry: any) => {
     const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
       ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
@@ -199,8 +249,8 @@ const SampleEntryPage: React.FC<{
   const isRiceQualityEntry = filterEntryType === 'RICE_SAMPLE' || selectedEntry?.entryType === 'RICE_SAMPLE';
   const isStaffUser = ['staff', 'physical_supervisor', 'paddy_supervisor'].includes(String(user?.role || '').toLowerCase());
   const isMillStaffOnly = String(user?.role || '').toLowerCase() === 'staff' && String(user?.staffType || '').toLowerCase() === 'mill';
-  const detailEditLocked = isStaffUser && (editingEntry as any)?.staffPartyNameEdits >= 1;
-  const qualityEditLocked = isStaffUser && (editingEntry as any)?.staffBagsEdits >= 1;
+  const detailEditLocked = isStaffUser && Number((editingEntry as any)?.staffPartyNameEdits || 0) >= Math.max(1, Number((editingEntry as any)?.staffEntryEditAllowance || 1));
+  const qualityEditLocked = isStaffUser && Number((editingEntry as any)?.staffBagsEdits || 0) >= Math.max(1, Number((editingEntry as any)?.staffQualityEditAllowance || 1));
   // Backward compatibility for existing field locks in Edit Modal
   const partyEditLocked = detailEditLocked;
   const bagsEditLocked = detailEditLocked;
@@ -445,14 +495,6 @@ const SampleEntryPage: React.FC<{
       if (cleaned.length > 5) return;
     }
     setQualityData(prev => ({ ...prev, [field]: cleaned }));
-  };
-  const hasAlphaOrPositiveValue = (val: any) => {
-    if (val === null || val === undefined || val === '') return false;
-    const raw = String(val).trim();
-    if (!raw) return false;
-    if (/[a-zA-Z]/.test(raw)) return true;
-    const num = parseFloat(raw);
-    return Number.isFinite(num);
   };
   const validateEntryForm = (entryType: EntryType, data: typeof formData) => {
     const isEmpty = (value: string) => !String(value || '').trim();
@@ -830,6 +872,38 @@ const SampleEntryPage: React.FC<{
     setShowEditModal(true);
   };
 
+  const requestEditApproval = async (entry: SampleEntry, type: 'entry' | 'quality') => {
+    const statusKey = type === 'quality' ? 'qualityEditApprovalStatus' : 'entryEditApprovalStatus';
+    if (String((entry as any)?.[statusKey] || '').toLowerCase() === 'pending') {
+      showNotification(`${type === 'quality' ? 'Quality' : 'Entry'} edit approval is already pending`, 'error');
+      return;
+    }
+    setApprovalRequestModal({
+      isOpen: true,
+      entry,
+      type,
+      reason: ''
+    });
+  };
+
+  const submitEditApprovalRequest = async () => {
+    if (!approvalRequestModal.entry) return;
+    try {
+      const token = localStorage.getItem('token');
+      await axios.post(`${API_URL}/sample-entries/${approvalRequestModal.entry.id}/edit-approval-request`, {
+        type: approvalRequestModal.type,
+        reason: approvalRequestModal.reason.trim()
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      showNotification(`${approvalRequestModal.type === 'quality' ? 'Quality' : 'Entry'} edit approval requested`, 'success');
+      setApprovalRequestModal({ isOpen: false, entry: null, type: 'entry', reason: '' });
+      loadEntries();
+    } catch (error: any) {
+      showNotification(error.response?.data?.error || 'Failed to request approval', 'error');
+    }
+  };
+
   const handleSaveEdit = async () => {
     if (!editingEntry || isSubmitting) return;
     const lockKey = `entry-edit-${editingEntry.id}`;
@@ -1014,6 +1088,8 @@ const SampleEntryPage: React.FC<{
           if (v === null || v === undefined) return '';
           const raw = String(v).trim();
           if (!raw) return '';
+          const numeric = Number(raw);
+          if (Number.isFinite(numeric) && numeric === 0) return '';
           return raw;
         };
         const rawOrEmpty = (rawVal: any, value: any) => {
@@ -1114,8 +1190,8 @@ const SampleEntryPage: React.FC<{
         && isProvided(qualityData.grainsCount)
       );
       if (qualityFields && !allQualityFilled) {
-        if (isMissing(qualityData.cutting1)) { showNotification('Cutting is required', 'error'); return; }
-        if (isMissing(qualityData.bend1)) { showNotification('Bend is required', 'error'); return; }
+        if (isMissing(qualityData.cutting1) || isMissing(qualityData.cutting2)) { showNotification('Full Cutting is required', 'error'); return; }
+        if (isMissing(qualityData.bend1) || isMissing(qualityData.bend2)) { showNotification('Full Bend is required', 'error'); return; }
         if (isMissing(qualityData.mix)) { showNotification('Mix is required', 'error'); return; }
         if (isMissing(qualityData.kandu)) { showNotification('Kandu is required', 'error'); return; }
         if (isMissing(qualityData.oil)) { showNotification('Oil is required', 'error'); return; }
@@ -1748,13 +1824,16 @@ const SampleEntryPage: React.FC<{
                               if (raw !== '') return true;
                               return hasAlphaOrPositiveValue(valueVal);
                             };
-                            const baseHasQuality = qp && isProvidedNumeric(qp.moistureRaw, qp.moisture) && (
-                               isProvidedNumeric(qp.cutting1Raw, qp.cutting1) ||
-                               isProvidedNumeric(qp.bend1Raw, qp.bend1) ||
-                               isProvidedAlpha(qp.mixRaw, qp.mix) ||
-                               isProvidedAlpha(qp.mixSRaw, qp.mixS) ||
-                               isProvidedAlpha(qp.mixLRaw, qp.mixL)
-                             );
+                            const baseHasQuality = qp && isProvidedNumeric(qp.moistureRaw, qp.moisture)
+                              && isProvidedNumeric(qp.grainsCountRaw, qp.grainsCount)
+                              && isProvidedNumeric(qp.cutting1Raw, qp.cutting1)
+                              && isProvidedNumeric(qp.cutting2Raw, qp.cutting2)
+                              && isProvidedNumeric(qp.bend1Raw, qp.bend1)
+                              && isProvidedNumeric(qp.bend2Raw, qp.bend2)
+                              && isProvidedAlpha(qp.mixRaw, qp.mix)
+                              && isProvidedAlpha(qp.kanduRaw, qp.kandu)
+                              && isProvidedAlpha(qp.oilRaw, qp.oil)
+                              && isProvidedAlpha(qp.skRaw, qp.sk);
                              const baseHas100Grams = entry.entryType !== 'RICE_SAMPLE' && qp
                               && isProvidedNumeric(qp.moistureRaw, qp.moisture)
                               && isProvidedNumeric(qp.grainsCountRaw, qp.grainsCount)
@@ -1782,8 +1861,10 @@ const SampleEntryPage: React.FC<{
                             const canAssignResample = ['admin', 'manager', 'owner'].includes(String(user?.role || '').toLowerCase());
                             
                             // Staff one-time edit visibility check (per row entry)
-                            const staffCanEditDetails = !isStaffUser || ((entry as any).staffPartyNameEdits || 0) < 1;
-                            const staffCanEditQuality = !isStaffUser || ((entry as any).staffBagsEdits || 0) < 1;
+                            const staffCanEditDetails = !isStaffUser || Number((entry as any).staffPartyNameEdits || 0) < Math.max(1, Number((entry as any).staffEntryEditAllowance || 1));
+                            const staffCanEditQuality = !isStaffUser || Number((entry as any).staffBagsEdits || 0) < Math.max(1, Number((entry as any).staffQualityEditAllowance || 1));
+                            const entryApprovalPending = String((entry as any).entryEditApprovalStatus || '').toLowerCase() === 'pending';
+                            const qualityApprovalPending = String((entry as any).qualityEditApprovalStatus || '').toLowerCase() === 'pending';
                             const canUploadPhotos = entry.entryType === 'LOCATION_SAMPLE' && (canEditQuality || !isStaffUser);
 
                             const handleNextClick = () => {
@@ -1895,7 +1976,7 @@ const SampleEntryPage: React.FC<{
                                         >
                                           Next {'>'}
                                         </button>
-                                        {staffCanEditDetails && (
+                                        {staffCanEditDetails ? (
                                           <button
                                             onClick={() => handleEditEntry(entry)}
                                             title="Edit Entry"
@@ -1912,7 +1993,15 @@ const SampleEntryPage: React.FC<{
                                           >
                                             Edit
                                           </button>
-                                        )}
+                                        ) : isStaffUser ? (
+                                          <button
+                                            onClick={() => requestEditApproval(entry, 'entry')}
+                                            title={entryApprovalPending ? 'Entry edit approval pending' : 'Request Entry Edit Approval'}
+                                            style={{ fontSize: '9px', padding: '2px 5px', backgroundColor: entryApprovalPending ? '#94a3b8' : '#7c3aed', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}
+                                          >
+                                            {entryApprovalPending ? 'Pending' : 'Req Edit'}
+                                          </button>
+                                        ) : null}
                                         {renderUploadButton()}
                                       </div>
                                     ) : has100Grams ? (
@@ -1923,12 +2012,16 @@ const SampleEntryPage: React.FC<{
                                         >⚡ 100-Gms Completed</span>
                                         {canEditQuality && expandedEntryId === entry.id && (
                                           <div style={{ width: '100%', display: 'flex', gap: '4px', marginTop: '2px', justifyContent: 'flex-start' }}>
-                                            {staffCanEditQuality && (
+                                            {staffCanEditQuality ? (
                                               <button onClick={() => handleViewEntry(entry)} title="Edit Quality" style={{ fontSize: '10px', padding: '3px 6px', backgroundColor: '#e67e22', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}>Edit Qlty</button>
-                                            )}
-                                            {staffCanEditDetails && (
+                                            ) : isStaffUser ? (
+                                              <button onClick={() => requestEditApproval(entry, 'quality')} title={qualityApprovalPending ? 'Quality edit approval pending' : 'Request Quality Edit Approval'} style={{ fontSize: '10px', padding: '3px 6px', backgroundColor: qualityApprovalPending ? '#94a3b8' : '#7c3aed', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}>{qualityApprovalPending ? 'Pending' : 'Req Qlty'}</button>
+                                            ) : null}
+                                            {staffCanEditDetails ? (
                                               <button onClick={() => handleEditEntry(entry)} title="Edit Entry" style={{ fontSize: '10px', padding: '3px 6px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}>Edit</button>
-                                            )}
+                                            ) : isStaffUser ? (
+                                              <button onClick={() => requestEditApproval(entry, 'entry')} title={entryApprovalPending ? 'Entry edit approval pending' : 'Request Entry Edit Approval'} style={{ fontSize: '10px', padding: '3px 6px', backgroundColor: entryApprovalPending ? '#94a3b8' : '#7c3aed', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}>{entryApprovalPending ? 'Pending' : 'Req Edit'}</button>
+                                            ) : null}
                                             {renderUploadButton()}
                                           </div>
                                         )}
@@ -1985,7 +2078,7 @@ const SampleEntryPage: React.FC<{
 
                                         {canEditQuality && expandedEntryId === entry.id && (
                                           <div style={{ display: 'flex', gap: '4px', justifyContent: 'flex-start' }}>
-                                            {staffCanEditQuality && (
+                                            {staffCanEditQuality ? (
                                               <button
                                                 onClick={() => handleViewEntry(entry)}
                                                 title="Edit Quality Parameters"
@@ -2002,8 +2095,10 @@ const SampleEntryPage: React.FC<{
                                               >
                                                 Edit Qlty
                                               </button>
-                                            )}
-                                            {staffCanEditDetails && (
+                                            ) : isStaffUser ? (
+                                              <button onClick={() => requestEditApproval(entry, 'quality')} title={qualityApprovalPending ? 'Quality edit approval pending' : 'Request Quality Edit Approval'} style={{ fontSize: '9px', padding: '2px 5px', backgroundColor: qualityApprovalPending ? '#94a3b8' : '#7c3aed', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}>{qualityApprovalPending ? 'Pending' : 'Req Qlty'}</button>
+                                            ) : null}
+                                            {staffCanEditDetails ? (
                                               <button
                                                 onClick={() => handleEditEntry(entry)}
                                                 title="Edit Entry"
@@ -2020,7 +2115,9 @@ const SampleEntryPage: React.FC<{
                                               >
                                                 Edit
                                               </button>
-                                            )}
+                                            ) : isStaffUser ? (
+                                              <button onClick={() => requestEditApproval(entry, 'entry')} title={entryApprovalPending ? 'Entry edit approval pending' : 'Request Entry Edit Approval'} style={{ fontSize: '9px', padding: '2px 5px', backgroundColor: entryApprovalPending ? '#94a3b8' : '#7c3aed', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}>{entryApprovalPending ? 'Pending' : 'Req Edit'}</button>
+                                            ) : null}
                                             {renderUploadButton()}
                                           </div>
                                         )}
@@ -2042,7 +2139,7 @@ const SampleEntryPage: React.FC<{
                                         >
                                           Next {'>'}
                                         </button>
-                                        {staffCanEditDetails && (
+                                        {staffCanEditDetails ? (
                                           <button
                                             onClick={() => handleEditEntry(entry)}
                                             title="Edit Entry"
@@ -2059,7 +2156,9 @@ const SampleEntryPage: React.FC<{
                                           >
                                             Edit
                                           </button>
-                                        )}
+                                        ) : isStaffUser ? (
+                                          <button onClick={() => requestEditApproval(entry, 'entry')} title={entryApprovalPending ? 'Entry edit approval pending' : 'Request Entry Edit Approval'} style={{ fontSize: '9px', padding: '2px 5px', backgroundColor: entryApprovalPending ? '#94a3b8' : '#7c3aed', color: 'white', border: 'none', borderRadius: '2px', cursor: 'pointer', fontWeight: '600' }}>{entryApprovalPending ? 'Pending' : 'Req Edit'}</button>
+                                        ) : null}
                                         {renderUploadButton()}
                                       </div>
                                     ) : (
@@ -3372,6 +3471,72 @@ const SampleEntryPage: React.FC<{
         )
       }
 
+      {approvalRequestModal.isOpen && approvalRequestModal.entry && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.45)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1100
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '10px',
+            padding: '18px',
+            width: '92%',
+            maxWidth: '420px',
+            boxShadow: '0 10px 30px rgba(0,0,0,0.25)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 style={{ margin: 0, color: '#1f2937', fontSize: '16px' }}>
+                Request {approvalRequestModal.type === 'quality' ? 'Quality' : 'Entry'} Edit Approval
+              </h3>
+              <button
+                type="button"
+                onClick={() => setApprovalRequestModal({ isOpen: false, entry: null, type: 'entry', reason: '' })}
+                style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#94a3b8' }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ fontSize: '12px', color: '#475569', marginBottom: '10px', lineHeight: '1.5' }}>
+              Party: <b>{toTitleCase(approvalRequestModal.entry.partyName || approvalRequestModal.entry.lorryNumber || '-')}</b> | Variety: <b>{toTitleCase(approvalRequestModal.entry.variety || '-')}</b>
+            </div>
+            <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, color: '#475569', fontSize: '12px' }}>
+              Reason
+            </label>
+            <textarea
+              value={approvalRequestModal.reason}
+              onChange={(e) => setApprovalRequestModal((prev) => ({ ...prev, reason: e.target.value }))}
+              rows={4}
+              placeholder="Enter reason for edit approval request"
+              style={{ width: '100%', padding: '10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px', resize: 'vertical' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '14px' }}>
+              <button
+                type="button"
+                onClick={() => setApprovalRequestModal({ isOpen: false, entry: null, type: 'entry', reason: '' })}
+                style={{ padding: '8px 14px', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff', cursor: 'pointer', fontWeight: 600 }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitEditApprovalRequest}
+                style={{ padding: '8px 14px', border: 'none', borderRadius: '6px', background: '#7c3aed', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+              >
+                Send Request
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Entry Modal */}
       {
         showEditModal && editingEntry && (
@@ -3906,13 +4071,13 @@ const SampleEntryPage: React.FC<{
                       {(detailEntry as any).godownImageUrl && (
                         <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
                           <div style={{ padding: '6px', background: '#f8fafc', fontSize: '10px', textAlign: 'center', fontWeight: '800', borderBottom: '1px solid #e2e8f0' }}>GODOWN IMAGE</div>
-                          <img src={`${API_URL.replace('/api', '')}${(detailEntry as any).godownImageUrl}`} alt="Godown" style={{ width: '100%', height: '120px', objectFit: 'cover' }} />
+                          <img src={resolveMediaUrl((detailEntry as any).godownImageUrl)} alt="Godown" style={{ width: '100%', height: '120px', objectFit: 'cover' }} />
                         </div>
                       )}
                       {(detailEntry as any).paddyLotImageUrl && (
                         <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
                           <div style={{ padding: '6px', background: '#f8fafc', fontSize: '10px', textAlign: 'center', fontWeight: '800', borderBottom: '1px solid #e2e8f0' }}>LOT IMAGE</div>
-                          <img src={`${API_URL.replace('/api', '')}${(detailEntry as any).paddyLotImageUrl}`} alt="Paddy Lot" style={{ width: '100%', height: '120px', objectFit: 'cover' }} />
+                          <img src={resolveMediaUrl((detailEntry as any).paddyLotImageUrl)} alt="Paddy Lot" style={{ width: '100%', height: '120px', objectFit: 'cover' }} />
                         </div>
                       )}
                     </div>
@@ -4082,7 +4247,7 @@ const SampleEntryPage: React.FC<{
                             Quality Photo
                           </div>
                           <img
-                            src={`${API_URL.replace('/api', '')}${qualityPhotoUrl}`}
+                            src={resolveMediaUrl(qualityPhotoUrl)}
                             alt="Quality"
                             style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e2e8f0' }}
                           />
@@ -4150,7 +4315,7 @@ const SampleEntryPage: React.FC<{
                           Quality Photo
                         </div>
                         <img
-                          src={`${API_URL.replace('/api', '')}${qualityPhotoUrl}`}
+                          src={resolveMediaUrl(qualityPhotoUrl)}
                           alt="Quality"
                           style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e2e8f0' }}
                         />
@@ -4407,8 +4572,10 @@ const SampleEntryPage: React.FC<{
                                     <td style={{ padding: '8px 4px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
                                       {h.remarks ? (
                                         <button
+                                          type="button"
                                           onClick={() => setRemarksPopup({ isOpen: true, text: String(h.remarks || '') })}
                                           style={{ border: '1px solid #90caf9', background: '#e3f2fd', color: '#1565c0', borderRadius: '6px', padding: '2px 8px', cursor: 'pointer', fontSize: '11px', fontWeight: '700' }}
+                                          title="View Remarks"
                                         >
                                           🔍
                                         </button>

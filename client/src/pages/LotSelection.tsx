@@ -58,7 +58,83 @@ const toSentenceCase = (value: string) => {
   if (!normalized) return '';
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 };
-  const formatGramsReport = (value?: string): string => {
+const getTimeValue = (value?: string | null) => {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+};
+const isProvidedNumericValue = (rawVal: any, valueVal: any) => {
+  const raw = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : '';
+  if (raw !== '') return true;
+  const num = Number(valueVal);
+  return Number.isFinite(num) && num > 0;
+};
+const hasAlphaOrPositiveValue = (val: any) => {
+  if (val === null || val === undefined || val === '') return false;
+  const raw = String(val).trim();
+  if (!raw) return false;
+  if (/[a-zA-Z]/.test(raw)) return true;
+  const num = parseFloat(raw);
+  return Number.isFinite(num);
+};
+const isProvidedAlphaValue = (rawVal: any, valueVal: any) => {
+  const raw = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : '';
+  if (raw !== '') return true;
+  return hasAlphaOrPositiveValue(valueVal);
+};
+const hasQualitySnapshot = (attempt: any) => {
+  const hasMoisture = isProvidedNumericValue(attempt?.moistureRaw, attempt?.moisture);
+  const hasGrains = isProvidedNumericValue(attempt?.grainsCountRaw, attempt?.grainsCount);
+  const hasDetailedQuality =
+    isProvidedNumericValue(attempt?.cutting1Raw, attempt?.cutting1) ||
+    isProvidedNumericValue(attempt?.bend1Raw, attempt?.bend1) ||
+    isProvidedAlphaValue(attempt?.mixRaw, attempt?.mix) ||
+    isProvidedAlphaValue(attempt?.mixSRaw, attempt?.mixS) ||
+    isProvidedAlphaValue(attempt?.mixLRaw, attempt?.mixL) ||
+    isProvidedAlphaValue(attempt?.kanduRaw, attempt?.kandu) ||
+    isProvidedAlphaValue(attempt?.oilRaw, attempt?.oil) ||
+    isProvidedAlphaValue(attempt?.skRaw, attempt?.sk);
+
+  return hasMoisture && (hasGrains || hasDetailedQuality);
+};
+const getQualityAttemptsForEntry = (entry: any) => {
+  const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
+    ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
+    : [];
+  const currentQuality = entry?.qualityParameters;
+
+  if (!currentQuality) return baseAttempts;
+  if (baseAttempts.length === 0) return hasQualitySnapshot(currentQuality) ? [currentQuality] : [];
+
+  const latestStoredAttempt = baseAttempts[baseAttempts.length - 1];
+  const latestStoredTs = getTimeValue(latestStoredAttempt?.updatedAt || latestStoredAttempt?.createdAt || null);
+  const currentQualityTs = getTimeValue(currentQuality.updatedAt || currentQuality.createdAt || null);
+  const lotSelectionTs = getTimeValue(entry?.lotSelectionAt || null);
+  const isResampleFlow = String(entry?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
+    || String(entry?.lotSelectionDecision || '').toUpperCase() === 'PASS_WITH_COOKING'
+    || baseAttempts.length > 1
+    || (Number(entry?.qualityReportAttempts) > 1);
+  const currentAlreadyIncluded = baseAttempts.some((a: any) =>
+    (a.id && currentQuality.id && String(a.id) === String(currentQuality.id))
+    || (currentQualityTs > 0 && latestStoredTs > 0 && currentQualityTs === latestStoredTs)
+  );
+  const shouldAppendCurrentQuality =
+    hasQualitySnapshot(currentQuality) &&
+    isResampleFlow &&
+    !currentAlreadyIncluded &&
+    currentQualityTs > 0;
+
+  if (!shouldAppendCurrentQuality) return baseAttempts;
+
+  return [
+    ...baseAttempts,
+    {
+      ...currentQuality,
+      attemptNo: Math.max(...baseAttempts.map((attempt: any) => Number(attempt.attemptNo) || 0), 1) + 1
+    }
+  ];
+};
+const formatGramsReport = (value?: string): string => {
   if (value === '5gms') return '5 gms';
   if (value === '10gms') return '10 gms';
   return '--';
@@ -229,6 +305,19 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
     } finally {
       setIsSubmitting(false);
       decisionLocksRef.current.delete(lockKey);
+    }
+  };
+
+  const openEntryDetail = async (entry: SampleEntry) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.get(`${API_URL}/sample-entries/${entry.id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setDetailEntry(response.data as SampleEntry);
+    } catch (error: any) {
+      showNotification(error.response?.data?.error || 'Failed to load entry details', 'error');
+      setDetailEntry(entry);
     }
   };
 
@@ -500,7 +589,13 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                                       {/^\d+$/.test(String(entry.packaging || '75')) ? `${entry.packaging || '75'} Kg` : entry.packaging || '75'}
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                      <div style={{ color: '#333', fontWeight: '600' }}>{toTitleCase(entry.partyName) || ''}</div>
+                                      <button
+                                        type="button"
+                                        onClick={() => openEntryDetail(entry)}
+                                        style={{ background: 'transparent', border: 'none', color: '#1565c0', textDecoration: 'underline', cursor: 'pointer', fontWeight: '700', fontSize: '12px', padding: 0, textAlign: 'left' }}
+                                      >
+                                        {toTitleCase(entry.partyName) || ''}
+                                      </button>
                                       {entry.entryType === 'DIRECT_LOADED_VEHICLE' && entry.lorryNumber ? <div style={{ fontSize: '11px', color: '#555', fontWeight: '600' }}>{entry.lorryNumber.toUpperCase()}</div> : ''}
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(entry.location) || '-'}</td>
@@ -585,9 +680,15 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', verticalAlign: 'middle', fontSize: '11px', textAlign: 'center' }}>
                                       {/^\d+$/.test(String(entry.packaging || '26')) ? `${entry.packaging || '26'} Kg` : entry.packaging || '26'}
                                     </td>
-                                    <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                      <div style={{ color: '#333', fontWeight: '600' }}>{toTitleCase(entry.partyName) || ''}</div>
-                                    </td>
+                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                       <button
+                                         type="button"
+                                         onClick={() => openEntryDetail(entry)}
+                                         style={{ background: 'transparent', border: 'none', color: '#1565c0', textDecoration: 'underline', cursor: 'pointer', fontWeight: '700', fontSize: '12px', padding: 0, textAlign: 'left' }}
+                                       >
+                                         {toTitleCase(entry.partyName) || ''}
+                                       </button>
+                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(entry.location) || '-'}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(entry.variety)}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -796,8 +897,10 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                       </div>
                     ) : getCollectorLabel(detailEntry.sampleCollectedBy || getCreatorLabel(detailEntry))],
                     ['Smell', (() => {
-                      const qpSmellHas = (detailEntry as any)?.qualityParameters?.smellHas;
-                      const qpSmellType = (detailEntry as any)?.qualityParameters?.smellType;
+                      const qualityAttempts = getQualityAttemptsForEntry(detailEntry as any);
+                      const smellAttempt = [...qualityAttempts].reverse().find((attempt: any) => attempt?.smellHas || (attempt?.smellType && String(attempt.smellType).trim()));
+                      const qpSmellHas = smellAttempt?.smellHas ?? (detailEntry as any)?.qualityParameters?.smellHas;
+                      const qpSmellType = smellAttempt?.smellType ?? (detailEntry as any)?.qualityParameters?.smellType;
                       const entrySmellHas = (detailEntry as any)?.smellHas;
                       const entrySmellType = (detailEntry as any)?.smellType;
                       const smellHas = qpSmellHas ?? entrySmellHas;
@@ -816,7 +919,7 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                 {/* Quality Parameters — grouped rows, hide 0 values */}
                 <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px' }}>🔬 Quality Parameters</h4>
                 {(() => {
-                  const qp = detailEntry.qualityParameters;
+                  const qpList = getQualityAttemptsForEntry(detailEntry as any);
                   const fmt = (rawVal: any, numericVal: any, forceDecimal = false, precision = 2) => {
                     const raw = rawVal != null ? String(rawVal).trim() : '';
                     if (raw !== '') return raw;
@@ -864,7 +967,100 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                       </div>
                     );
                   };
-                  if (!qp) return <div style={{ color: '#999', textAlign: 'center', padding: '12px' }}>No quality data available</div>;
+                  if (qpList.length === 0) return <div style={{ color: '#999', textAlign: 'center', padding: '12px' }}>No quality data available</div>;
+                  const getAttemptLabel = (attemptNo: number, idx: number) => {
+                    const num = attemptNo || idx + 1;
+                    if (num === 1) return '1st Sample';
+                    if (num === 2) return '2nd Sample';
+                    if (num === 3) return '3rd Sample';
+                    return `${num}th Sample`;
+                  };
+                  if (qpList.length > 1) {
+                    const getCellValue = (qp: any, key: string) => {
+                      if (key === 'reportedBy') return qp?.reportedBy ? toSentenceCase(qp.reportedBy) : '--';
+                      if (key === 'moisture') {
+                        const dryVal = fmt((qp as any).dryMoistureRaw, (qp as any).dryMoisture, false, 2);
+                        const moistureVal = fmt((qp as any).moistureRaw, qp.moisture, false, 2);
+                        if (!dryVal && !moistureVal) return '--';
+                        return dryVal ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px' }}>
+                            <span style={{ color: '#e67e22', fontWeight: '800', fontSize: '11px' }}>{dryVal}%</span>
+                            <span>{moistureVal}%</span>
+                          </div>
+                        ) : `${moistureVal}%`;
+                      }
+                      if (key === 'cutting') {
+                        const first = fmt((qp as any).cutting1Raw, qp.cutting1);
+                        const second = fmt((qp as any).cutting2Raw, qp.cutting2);
+                        return first && second ? `${first}x${second}` : '--';
+                      }
+                      if (key === 'bend') {
+                        const first = fmt((qp as any).bend1Raw, qp.bend1);
+                        const second = fmt((qp as any).bend2Raw, qp.bend2);
+                        return first && second ? `${first}x${second}` : '--';
+                      }
+                      if (key === 'grainsCount') return fmtB((qp as any).grainsCountRaw, qp.grainsCount, true, true) || '--';
+                      if (key === 'mix') return fmtB((qp as any).mixRaw, qp.mix) || '--';
+                      if (key === 'mixS') return fmtB((qp as any).mixSRaw, qp.mixS) || '--';
+                      if (key === 'mixL') return fmtB((qp as any).mixLRaw, qp.mixL) || '--';
+                      if (key === 'kandu') return fmtB((qp as any).kanduRaw, qp.kandu) || '--';
+                      if (key === 'oil') return fmtB((qp as any).oilRaw, qp.oil) || '--';
+                      if (key === 'sk') return fmtB((qp as any).skRaw, qp.sk) || '--';
+                      if (key === 'wbR') return fmtB((qp as any).wbRRaw, qp.wbR) || '--';
+                      if (key === 'wbBk') return fmtB((qp as any).wbBkRaw, qp.wbBk) || '--';
+                      if (key === 'wbT') return fmtB((qp as any).wbTRaw, qp.wbT) || '--';
+                      if (key === 'paddyWb') return fmtB((qp as any).paddyWbRaw, qp.paddyWb) || '--';
+                      return '--';
+                    };
+                    const columns = [
+                      { key: 'reportedBy', label: 'Sample Reported By' },
+                      { key: 'moisture', label: 'Moisture' },
+                      { key: 'cutting', label: 'Cutting' },
+                      { key: 'bend', label: 'Bend' },
+                      { key: 'grainsCount', label: 'Grains Count' },
+                      { key: 'mix', label: 'Mix' },
+                      { key: 'mixS', label: 'S Mix' },
+                      { key: 'mixL', label: 'L Mix' },
+                      { key: 'kandu', label: 'Kandu' },
+                      { key: 'oil', label: 'Oil' },
+                      { key: 'sk', label: 'SK' },
+                      { key: 'wbR', label: 'WB-R' },
+                      { key: 'wbBk', label: 'WB-BK' },
+                      { key: 'wbT', label: 'WB-T' },
+                      { key: 'paddyWb', label: 'Paddy WB' }
+                    ];
+                    return (
+                      <div style={{ overflowX: 'auto', width: '100%' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1200px', background: '#fff' }}>
+                          <thead>
+                            <tr>
+                              <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', width: '120px' }} />
+                              {columns.map((column) => (
+                                <th key={column.key} style={{ textAlign: 'center', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', fontSize: '11px', color: '#64748b', fontWeight: '700', whiteSpace: 'nowrap' }}>
+                                  {column.label}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {qpList.map((qp: any, idx: number) => (
+                              <tr key={`attempt-${idx}`} style={{ borderBottom: '1px solid #edf2f7' }}>
+                                <td style={{ padding: '10px', fontWeight: '800', color: '#111827', whiteSpace: 'nowrap' }}>
+                                  {getAttemptLabel(qp?.attemptNo, idx)}
+                                </td>
+                                {columns.map((column) => (
+                                  <td key={`${column.key}-${idx}`} style={{ padding: '10px', textAlign: 'center', fontSize: '12px', color: '#1f2937', fontWeight: '600', whiteSpace: 'nowrap' }}>
+                                    {getCellValue(qp, column.key)}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  }
+                  const qp = qpList[0];
                   // Row 1: Moisture (with dry moisture), Cutting, Bend, Grains Count
                   const row1: { label: string; value: any }[] = [];
                   if (fmt((qp as any).moistureRaw, qp.moisture)) {

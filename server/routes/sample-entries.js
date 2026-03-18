@@ -56,10 +56,12 @@ const canLocationStaffEditQuality = async (sampleEntry, reqUser) => {
 
 const invalidateSampleEntryTabCaches = () => {
   [
+    'sample-entries/tabs/edit-approvals',
     'sample-entries/tabs/final-pass-lots',
     'sample-entries/tabs/loading-lots',
     'sample-entries/tabs/resample-assignments',
     'sample-entries/tabs/completed-lots',
+    'sample-entries/tabs/sample-book',
     'sample-entries/by-role'
   ].forEach(invalidateCache);
 };
@@ -102,6 +104,10 @@ const parseBoolFlag = (value) => {
   if (value === false || value === 'false' || value === 0 || value === '0') return false;
   return null;
 };
+const toTitleCaseWords = (value) => String(value || '')
+  .toLowerCase()
+  .replace(/\b\w/g, (char) => char.toUpperCase())
+  .trim();
 
 const normalizeAuditMetadata = (metadata) => {
   if (!metadata) return null;
@@ -693,7 +699,7 @@ router.get('/tabs/resample-assignments', authenticateToken, cacheMiddleware(30),
       const qualityAt = entry.qualityParameters
         ? new Date(entry.qualityParameters.updatedAt || entry.qualityParameters.createdAt || 0).getTime()
         : 0;
-      return !qualityAt || qualityAt < lotSelectionAt;
+      return !qualityAt || qualityAt <= lotSelectionAt;
     });
 
     if (result.pagination) {
@@ -704,6 +710,163 @@ router.get('/tabs/resample-assignments', authenticateToken, cacheMiddleware(30),
   } catch (error) {
     console.error('Error getting resample assignments:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/tabs/edit-approvals', authenticateToken, cacheMiddleware(15), async (req, res) => {
+  try {
+    const workflowRole = getWorkflowRole(req.user);
+    if (!['admin', 'manager', 'owner'].includes(workflowRole)) {
+      return res.status(403).json({ error: 'Only admin/manager can view edit approvals' });
+    }
+
+    const entries = await SampleEntry.findAll({
+      where: {
+        [Op.or]: [
+          { entryEditApprovalStatus: 'pending' },
+          { qualityEditApprovalStatus: 'pending' }
+        ]
+      },
+      include: [
+        { model: User, as: 'creator', attributes: ['id', 'username', 'fullName'], required: false }
+      ],
+      order: [
+        ['entryDate', 'DESC'],
+        ['createdAt', 'DESC']
+      ]
+    });
+
+    const requestUserIds = Array.from(new Set(entries.flatMap((entry) => ([
+      entry.entryEditApprovalRequestedBy,
+      entry.qualityEditApprovalRequestedBy
+    ])).filter(Boolean)));
+    const users = requestUserIds.length
+      ? await User.findAll({ where: { id: requestUserIds }, attributes: ['id', 'username', 'fullName'], raw: true })
+      : [];
+    const userMap = new Map(users.map((user) => [user.id, user]));
+
+    const payload = entries.map((entry) => {
+      const plain = entry.toJSON ? entry.toJSON() : entry;
+      return {
+        ...plain,
+        entryEditApprovalRequestedByName: plain.entryEditApprovalRequestedBy
+          ? (userMap.get(plain.entryEditApprovalRequestedBy)?.fullName || userMap.get(plain.entryEditApprovalRequestedBy)?.username || '')
+          : '',
+        qualityEditApprovalRequestedByName: plain.qualityEditApprovalRequestedBy
+          ? (userMap.get(plain.qualityEditApprovalRequestedBy)?.fullName || userMap.get(plain.qualityEditApprovalRequestedBy)?.username || '')
+          : ''
+      };
+    });
+
+    return res.json({ entries: payload });
+  } catch (error) {
+    console.error('Error getting edit approvals:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:id/edit-approval-request', authenticateToken, async (req, res) => {
+  try {
+    const workflowRole = getWorkflowRole(req.user);
+    if (!['staff', 'physical_supervisor', 'paddy_supervisor'].includes(workflowRole)) {
+      return res.status(403).json({ error: 'Only staff can request edit approval' });
+    }
+
+    const { type, reason } = req.body || {};
+    const requestType = String(type || '').trim().toLowerCase();
+    if (!['entry', 'quality'].includes(requestType)) {
+      return res.status(400).json({ error: 'Approval type must be entry or quality' });
+    }
+
+    const sampleEntry = await SampleEntry.findByPk(req.params.id);
+    if (!sampleEntry) {
+      return res.status(404).json({ error: 'Sample entry not found' });
+    }
+
+    const isQualityRequest = requestType === 'quality';
+    const usedCount = Number(isQualityRequest ? sampleEntry.staffBagsEdits : sampleEntry.staffPartyNameEdits) || 0;
+    const allowance = Math.max(1, Number(isQualityRequest ? sampleEntry.staffQualityEditAllowance : sampleEntry.staffEntryEditAllowance) || 1);
+    if (usedCount < allowance) {
+      return res.status(400).json({ error: 'This entry still has a direct staff edit available. Approval is not needed yet.' });
+    }
+
+    const statusKey = isQualityRequest ? 'qualityEditApprovalStatus' : 'entryEditApprovalStatus';
+    if (sampleEntry[statusKey] === 'pending') {
+      return res.status(400).json({ error: 'Approval request is already pending for this edit type.' });
+    }
+
+    const updates = isQualityRequest
+      ? {
+        qualityEditApprovalStatus: 'pending',
+        qualityEditApprovalReason: String(reason || '').trim() || null,
+        qualityEditApprovalRequestedBy: req.user.userId,
+        qualityEditApprovalRequestedAt: new Date(),
+        qualityEditApprovalApprovedBy: null,
+        qualityEditApprovalApprovedAt: null
+      }
+      : {
+        entryEditApprovalStatus: 'pending',
+        entryEditApprovalReason: String(reason || '').trim() || null,
+        entryEditApprovalRequestedBy: req.user.userId,
+        entryEditApprovalRequestedAt: new Date(),
+        entryEditApprovalApprovedBy: null,
+        entryEditApprovalApprovedAt: null
+      };
+
+    await sampleEntry.update(updates);
+    invalidateSampleEntryTabCaches();
+    return res.json({ success: true, message: `${isQualityRequest ? 'Quality' : 'Entry'} edit approval requested.` });
+  } catch (error) {
+    console.error('Error requesting edit approval:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:id/edit-approval-decision', authenticateToken, async (req, res) => {
+  try {
+    const workflowRole = getWorkflowRole(req.user);
+    if (!['admin', 'manager', 'owner'].includes(workflowRole)) {
+      return res.status(403).json({ error: 'Only admin/manager can approve edit requests' });
+    }
+
+    const { type, decision } = req.body || {};
+    const requestType = String(type || '').trim().toLowerCase();
+    const nextDecision = String(decision || '').trim().toLowerCase();
+    if (!['entry', 'quality'].includes(requestType) || !['approve', 'reject'].includes(nextDecision)) {
+      return res.status(400).json({ error: 'Invalid approval decision request' });
+    }
+
+    const sampleEntry = await SampleEntry.findByPk(req.params.id);
+    if (!sampleEntry) {
+      return res.status(404).json({ error: 'Sample entry not found' });
+    }
+
+    const isQualityRequest = requestType === 'quality';
+    const statusKey = isQualityRequest ? 'qualityEditApprovalStatus' : 'entryEditApprovalStatus';
+    const approvedByKey = isQualityRequest ? 'qualityEditApprovalApprovedBy' : 'entryEditApprovalApprovedBy';
+    const approvedAtKey = isQualityRequest ? 'qualityEditApprovalApprovedAt' : 'entryEditApprovalApprovedAt';
+    const allowanceKey = isQualityRequest ? 'staffQualityEditAllowance' : 'staffEntryEditAllowance';
+
+    if (sampleEntry[statusKey] !== 'pending') {
+      return res.status(400).json({ error: 'No pending request found for this edit type.' });
+    }
+
+    const updates = {
+      [statusKey]: nextDecision === 'approve' ? 'approved' : 'rejected',
+      [approvedByKey]: req.user.userId,
+      [approvedAtKey]: new Date()
+    };
+
+    if (nextDecision === 'approve') {
+      updates[allowanceKey] = Math.max(1, Number(sampleEntry[allowanceKey] || 1)) + 1;
+    }
+
+    await sampleEntry.update(updates);
+    invalidateSampleEntryTabCaches();
+    return res.json({ success: true, message: `${isQualityRequest ? 'Quality' : 'Entry'} edit request ${nextDecision}d.` });
+  } catch (error) {
+    console.error('Error deciding edit approval:', error);
+    return res.status(500).json({ error: error.message });
   }
 });
 
@@ -750,7 +913,8 @@ router.get('/tabs/final-pass-lots', authenticateToken, cacheMiddleware(15), asyn
                     'QUALITY_CHECK',
                     'COOKING_REPORT',
                     'LOT_SELECTION',
-                    'FINAL_REPORT'
+                    'FINAL_REPORT',
+                    'LOT_ALLOTMENT'
                   ]
                 }
               }
@@ -1068,6 +1232,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     result.qualityPending = recheckState.qualityPending;
     result.cookingPending = recheckState.cookingPending;
     result.recheckPreviousDecision = recheckState.recheckPreviousDecision;
+    await attachLoadingLotsHistories([result]);
 
     res.json(result);
   } catch (error) {
@@ -1362,8 +1527,10 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
           const isResampleQualityPending = !!(sampleEntry?.lotSelectionDecision === 'FAIL' && lotSelectionAt && qualityUpdatedAt
             && new Date(qualityUpdatedAt).getTime() < new Date(lotSelectionAt).getTime());
 
-          // Staff one-time edit check: if already used their one chance, block
-          if (req.user.role === 'staff' && sampleEntry?.staffBagsEdits >= 1 && !isRecheckQualityPending && !isResampleQualityPending) {
+          // Staff one-time edit check: if already used their available chances, block
+          const qualityEditAllowance = Math.max(1, Number(sampleEntry?.staffQualityEditAllowance || 1));
+          const isLimitedStaffRole = ['staff', 'physical_supervisor', 'paddy_supervisor'].includes(String(getWorkflowRole(req.user) || '').toLowerCase());
+          if (isLimitedStaffRole && Number(sampleEntry?.staffBagsEdits || 0) >= qualityEditAllowance && !isRecheckQualityPending && !isResampleQualityPending) {
             return res.status(403).json({ error: 'Quality parameters can only be edited once by staff.' });
           }
 
@@ -1389,7 +1556,7 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
 
           // Staff with staffBagsEdits=0 get ONE chance to update quality
           // Admin/manager can always update (no 409 block for them)
-          if (req.user.role === 'staff') {
+          if (isLimitedStaffRole) {
             // Staff one-time edit: allow update, then lock
             if (req.file) {
               const uploadResult = await FileUploadService.uploadFile(req.file, { compress: true });
@@ -1402,7 +1569,15 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
             );
             // Increment the edit counter to lock future edits
             if (sampleEntry) {
-              await sampleEntry.update({ staffBagsEdits: (sampleEntry.staffBagsEdits || 0) + 1 });
+              await sampleEntry.update({
+                staffBagsEdits: (sampleEntry.staffBagsEdits || 0) + 1,
+                qualityEditApprovalStatus: null,
+                qualityEditApprovalReason: null,
+                qualityEditApprovalRequestedBy: null,
+                qualityEditApprovalRequestedAt: null,
+                qualityEditApprovalApprovedBy: null,
+                qualityEditApprovalApprovedAt: null
+              });
             }
             return res.status(200).json(updatedQuality);
           } else if (['admin', 'manager', 'owner'].includes(req.user.role)) {
@@ -1498,8 +1673,10 @@ router.put('/:id/quality-parameters', authenticateToken, async (req, res) => {
         const isResampleQualityPending = !!(sampleEntry?.lotSelectionDecision === 'FAIL' && lotSelectionAt && qualityUpdatedAt
           && new Date(qualityUpdatedAt).getTime() < new Date(lotSelectionAt).getTime());
 
-        // Admin/Manager edit only. Staff can edit quality ONLY once (checking staffBagsEdits).
-        if (req.user.role === 'staff' && sampleEntry.staffBagsEdits >= 1 && !isRecheckQualityPending && !isResampleQualityPending) {
+        // Admin/Manager edit only. Staff can edit quality only up to their approved allowance.
+        const qualityEditAllowance = Math.max(1, Number(sampleEntry.staffQualityEditAllowance || 1));
+        const isLimitedStaffRole = ['staff', 'physical_supervisor', 'paddy_supervisor'].includes(String(getWorkflowRole(req.user) || '').toLowerCase());
+        if (isLimitedStaffRole && Number(sampleEntry.staffBagsEdits || 0) >= qualityEditAllowance && !isRecheckQualityPending && !isResampleQualityPending) {
           return res.status(403).json({ error: 'Quality parameters can only be edited once by staff. Please contact admin/manager for further changes.' });
         }
 
@@ -1596,8 +1773,16 @@ router.put('/:id/quality-parameters', authenticateToken, async (req, res) => {
         );
 
         // Increment edit counter for staff to prevent further changes (skip during recheck)
-        if (req.user.role === 'staff' && !isRecheckQualityPending) {
-          await sampleEntry.update({ staffBagsEdits: (sampleEntry.staffBagsEdits || 0) + 1 });
+        if (isLimitedStaffRole && !isRecheckQualityPending) {
+          await sampleEntry.update({
+            staffBagsEdits: (sampleEntry.staffBagsEdits || 0) + 1,
+            qualityEditApprovalStatus: null,
+            qualityEditApprovalReason: null,
+            qualityEditApprovalRequestedBy: null,
+            qualityEditApprovalRequestedAt: null,
+            qualityEditApprovalApprovedBy: null,
+            qualityEditApprovalApprovedAt: null
+          });
         }
 
         res.json(updated);

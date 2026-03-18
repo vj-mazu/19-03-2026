@@ -1594,6 +1594,15 @@ const startServer = async () => {
       console.log('✅ All migrations + indexes completed.');
     }
 
+      // Migration 120: Add sample entry edit approval workflow fields
+      try {
+        const addEditApprovalWorkflow = require('./migrations/120_add_sample_entry_edit_approval_workflow');
+        await addEditApprovalWorkflow.up(sequelize.getQueryInterface(), sequelize.Sequelize);
+        console.log('âœ… Migration 120: sample entry edit approval workflow added');
+      } catch (error) {
+        console.log('âš ï¸ Migration 120 warning:', error.message);
+      }
+
     // Default warehouses removed - users should create their own warehouses
 
     // Create default users if they don't exist

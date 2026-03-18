@@ -57,6 +57,8 @@ interface SampleEntry {
         remarks?: string;
         cookingDoneBy?: string;
         cookingApprovedBy?: string;
+        updatedAt?: string;
+        createdAt?: string;
         history?: Array<{
             date?: string | null;
             status?: string | null;
@@ -103,9 +105,34 @@ interface SampleEntry {
             offeringPrice?: number;
             finalPrice?: number;
             finalBaseRate?: number;
+            moistureValue?: number;
+            hamali?: number;
+            hamaliUnit?: string;
+            brokerage?: number;
+            brokerageUnit?: string;
+            lf?: number;
+            lfUnit?: string;
+            egbType?: string;
+            egbValue?: number;
+            cdValue?: number;
+            cdUnit?: string;
+            bankLoanValue?: number;
+            bankLoanUnit?: string;
+            paymentConditionValue?: number;
+            paymentConditionUnit?: string;
         }>;
     };
     creator?: { username: string };
+    staffEntryEditAllowance?: number;
+    staffQualityEditAllowance?: number;
+    entryEditApprovalStatus?: string | null;
+    entryEditApprovalReason?: string | null;
+    entryEditApprovalRequestedAt?: string | null;
+    entryEditApprovalRequestedByName?: string | null;
+    qualityEditApprovalStatus?: string | null;
+    qualityEditApprovalReason?: string | null;
+    qualityEditApprovalRequestedAt?: string | null;
+    qualityEditApprovalRequestedByName?: string | null;
 }
 
 const toTitleCase = (str: string) => str ? str.replace(/\b\w/g, c => c.toUpperCase()) : '';
@@ -113,6 +140,13 @@ const toSentenceCase = (value: string) => {
     const normalized = String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
     if (!normalized) return '';
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+};
+const resolveMediaUrl = (value?: string | null) => {
+    const url = String(value || '').trim();
+    if (!url) return '';
+    if (/^https?:\/\//i.test(url)) return url;
+    const baseUrl = API_URL.replace(/\/api\/?$/, '');
+    return url.startsWith('/') ? `${baseUrl}${url}` : `${baseUrl}/${url}`;
 };
 const getPartyLabel = (entry: SampleEntry) => {
     const partyNameText = toTitleCase(entry.partyName || '').trim();
@@ -210,7 +244,9 @@ const getResampleRoundLabel = (attempts: number) => {
 };
 const getSamplingLabel = (attemptNo: number) => {
     if (attemptNo <= 1) return '1st';
-    return '2nd';
+    if (attemptNo === 2) return '2nd';
+    if (attemptNo === 3) return '3rd';
+    return `${attemptNo}th`;
 };
 const getQualityAttemptsForEntry = (entry: any) => {
     const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
@@ -225,8 +261,15 @@ const getQualityAttemptsForEntry = (entry: any) => {
     const latestStoredTs = getTimeValue(latestStoredAttempt?.updatedAt || latestStoredAttempt?.createdAt || null);
     const currentQualityTs = getTimeValue(currentQuality.updatedAt || currentQuality.createdAt || null);
     const lotSelectionTs = getTimeValue(entry?.lotSelectionAt || null);
-    const isResampleFlow = String(entry?.lotSelectionDecision || '').toUpperCase() === 'FAIL' || baseAttempts.length > 1;
-    const shouldAppendCurrentQuality = isResampleFlow && currentQualityTs > latestStoredTs && (!lotSelectionTs || currentQualityTs >= lotSelectionTs);
+    const isResampleFlow = String(entry?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
+        || String(entry?.lotSelectionDecision || '').toUpperCase() === 'PASS_WITH_COOKING'
+        || baseAttempts.length > 1
+        || (Number(entry?.qualityReportAttempts) > 1);
+    const currentAlreadyIncluded = baseAttempts.some((a: any) =>
+        (a.id && currentQuality.id && String(a.id) === String(currentQuality.id))
+        || (currentQualityTs > 0 && latestStoredTs > 0 && currentQualityTs === latestStoredTs)
+    );
+    const shouldAppendCurrentQuality = isResampleFlow && !currentAlreadyIncluded && currentQualityTs > 0;
 
     if (!shouldAppendCurrentQuality) return baseAttempts;
 
@@ -258,8 +301,10 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
     const isRiceBook = entryType === 'RICE_SAMPLE';
     const tableMinWidth = isRiceBook ? '100%' : '1500px';
     const [entries, setEntries] = useState<SampleEntry[]>([]);
+    const [approvalEntries, setApprovalEntries] = useState<SampleEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [supervisors, setSupervisors] = useState<SupervisorUser[]>([]);
+    const [activeView, setActiveView] = useState<'sample-book' | 'edit-approvals'>('sample-book');
 
     // Pagination
     const [page, setPage] = useState(1);
@@ -332,6 +377,13 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [page]);
 
+    useEffect(() => {
+        if (activeView === 'edit-approvals') {
+            loadApprovalEntries();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeView]);
+
     const loadEntries = async (fFrom?: string, fTo?: string, fBroker?: string) => {
         try {
             setLoading(true);
@@ -362,6 +414,35 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
             console.error('Failed to load entries', error);
         } finally {
             setLoading(false);
+        }
+    };
+    const loadApprovalEntries = async () => {
+        try {
+            setLoading(true);
+            const token = localStorage.getItem('token');
+            const response = await axios.get(`${API_URL}/sample-entries/tabs/edit-approvals`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const nextEntries = (response.data as any)?.entries || [];
+            setApprovalEntries(nextEntries);
+        } catch (error) {
+            console.error('Error loading edit approvals:', error);
+            toast.error('Failed to load edit approvals');
+        } finally {
+            setLoading(false);
+        }
+    };
+    const handleApprovalDecision = async (entry: SampleEntry, type: 'entry' | 'quality', decision: 'approve' | 'reject') => {
+        try {
+            const token = localStorage.getItem('token');
+            await axios.post(`${API_URL}/sample-entries/${entry.id}/edit-approval-decision`, { type, decision }, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            toast.success(`${type === 'quality' ? 'Quality' : 'Entry'} edit request ${decision}d`);
+            loadApprovalEntries();
+            loadEntries();
+        } catch (error: any) {
+            toast.error(error.response?.data?.error || 'Failed to update approval request');
         }
     };
 
@@ -521,6 +602,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
 
     const buildQualityStatusRows = (entry: SampleEntry) => {
         const attemptsSorted = getQualityAttemptsForEntry(entry);
+        const isHardFailed = String(entry.workflowStatus || '').toUpperCase() === 'FAILED';
         const isFailDecision = String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL' && String(entry.workflowStatus || '').toUpperCase() !== 'FAILED';
         const isQualityRecheckPending = (entry as any).qualityPending === true
             || ((entry as any).qualityPending == null && (entry as any).recheckRequested === true && (entry as any).recheckType !== 'cooking');
@@ -540,12 +622,17 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
             const isLast = idx === attemptsSorted.length - 1;
             let status = mapQualityDecisionToStatus(entry.lotSelectionDecision);
 
-            if (isBeforeResampleBoundary) {
+            if (isFailDecision) {
+                if (attemptsSorted.length <= 1) {
+                    status = 'Pass';
+                } else {
+                    status = isLast ? (isHardFailed ? 'Fail' : 'Pending') : 'Pass';
+                }
+            } else if (isBeforeResampleBoundary) {
                 status = 'Pass';
-            } else if (isCurrentResampleAttempt) {
-                status = 'Pending';
-            } else if (isFailDecision) {
-                status = 'Fail';
+            } else if (lotSelectionTs > 0 && attemptTs >= lotSelectionTs) {
+                const overallStatus = mapQualityDecisionToStatus(entry.lotSelectionDecision);
+                status = isHardFailed ? 'Fail' : (overallStatus === 'Pass' ? 'Pass' : 'Pending');
             } else if (isLast && isQualityRecheckPending && !isCookingOnlyRecheck) {
                 status = mapQualityDecisionToStatus(previousDecision || entry.lotSelectionDecision);
             } else if (isLast && isCookingDrivenResample) {
@@ -601,7 +688,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
         const historyRaw = Array.isArray(cr?.history) ? cr!.history : [];
         const history = [...historyRaw].sort((a, b) => toTs((a as any)?.date || (a as any)?.updatedAt || (a as any)?.createdAt || '') - toTs((b as any)?.date || (b as any)?.updatedAt || (b as any)?.createdAt || ''));
         const rows: Array<{ status: string; remarks: string; doneBy: string; doneDate: any; approvedBy: string; approvedDate: any; }> = [];
-        let pendingDone: { doneBy: string; doneDate: any; remarks: string; } | null = null;
+        let pendingDone: { doneBy: string; doneDate: any; remarks: string } | null = null as { doneBy: string; doneDate: any; remarks: string } | null;
 
         history.forEach((h: any) => {
             const hasStatus = !!h?.status;
@@ -746,12 +833,12 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
         const key = String(status || '').trim().toUpperCase();
         const colors: Record<string, { bg: string; color: string; label: string }> = {
             STAFF_ENTRY: { bg: '#e3f2fd', color: '#1565c0', label: 'Sample Entry Done' },
-            QUALITY_CHECK: { bg: '#ffe0b2', color: '#e65100', label: 'Pending Quality Check' },
-            LOT_SELECTION: { bg: '#f3e5f5', color: '#7b1fa2', label: 'Pending Sample Selection' },
-            COOKING_REPORT: { bg: '#fff8e1', color: '#f57f17', label: 'Pending Cooking Report' },
-            FINAL_REPORT: { bg: '#e8eaf6', color: '#283593', label: 'Pending Final Pass' },
-            LOT_ALLOTMENT: { bg: '#e0f7fa', color: '#006064', label: 'Pending Loading Lots' },
-            PENDING_ALLOTTING_SUPERVISOR: { bg: '#fce4ec', color: '#880e4f', label: 'Pending Supervisor Allotment' },
+            QUALITY_CHECK: { bg: '#fff8e1', color: '#e65100', label: 'Pending' },
+            LOT_SELECTION: { bg: '#fff8e1', color: '#f57f17', label: 'Pending' },
+            COOKING_REPORT: { bg: '#fff8e1', color: '#f57f17', label: 'Pending' },
+            FINAL_REPORT: { bg: '#fff8e1', color: '#283593', label: 'Pending' },
+            LOT_ALLOTMENT: { bg: '#fff8e1', color: '#006064', label: 'Pending' },
+            PENDING_ALLOTTING_SUPERVISOR: { bg: '#fff8e1', color: '#880e4f', label: 'Pending' },
             PHYSICAL_INSPECTION: { bg: '#ffe0b2', color: '#bf360c', label: 'Physical Inspection' },
             INVENTORY_ENTRY: { bg: '#f1f8e9', color: '#33691e', label: 'Inventory Entry' },
             COMPLETED: { bg: '#c8e6c9', color: '#1b5e20', label: 'Completed' },
@@ -770,13 +857,15 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
         const cookingRows = buildCookingStatusRows(entry);
         const latestQuality = qualityRows.length > 0 ? qualityRows[qualityRows.length - 1] : null;
         const latestCooking = cookingRows.length > 0 ? cookingRows[cookingRows.length - 1] : null;
-        const hasDetailedQuality = !!(qp && (
-            isProvidedNumeric((qp as any).cutting1Raw, qp.cutting1)
-            || isProvidedNumeric((qp as any).bend1Raw, qp.bend1)
-            || isProvidedAlpha((qp as any).mixRaw, qp.mix)
-            || isProvidedAlpha((qp as any).mixSRaw, qp.mixS)
-            || isProvidedAlpha((qp as any).mixLRaw, qp.mixL)
-        ));
+        const hasDetailedQuality = !!(qp
+            && isProvidedNumeric((qp as any).cutting1Raw, qp.cutting1)
+            && isProvidedNumeric((qp as any).cutting2Raw, qp.cutting2)
+            && isProvidedNumeric((qp as any).bend1Raw, qp.bend1)
+            && isProvidedNumeric((qp as any).bend2Raw, qp.bend2)
+            && isProvidedAlpha((qp as any).mixRaw, qp.mix)
+            && isProvidedAlpha((qp as any).kanduRaw, qp.kandu)
+            && isProvidedAlpha((qp as any).oilRaw, qp.oil)
+            && isProvidedAlpha((qp as any).skRaw, qp.sk));
         const has100GmsOnly = !!(
             qp
             && isProvidedNumeric((qp as any).moistureRaw, qp.moisture)
@@ -787,45 +876,20 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
 
         if (entry.lotSelectionDecision === 'SOLDOUT' || (entry.workflowStatus === 'COMPLETED' && (entry.offering?.finalPrice || entry.offering?.finalBaseRate))) {
             statusRows.push({ label: 'Sold Out', bg: '#800000', color: '#ffffff' });
-        } else if (entry.workflowStatus === 'FAILED' || latestCooking?.status === 'Fail') {
-            statusRows.push({ label: 'Failed', bg: '#ffcdd2', color: '#b71c1c' });
-        } else if (entry.lotSelectionDecision === 'PASS_WITHOUT_COOKING') {
-            statusRows.push({ label: has100GmsOnly ? '100-Gms/Pass' : 'Pass', bg: '#c8e6c9', color: '#1b5e20' });
-        } else if (entry.lotSelectionDecision === 'PASS_WITH_COOKING' && !latestCooking) {
-            statusRows.push({ label: 'Pending', bg: '#fff8e1', color: '#f57f17' });
-        } else if (entry.lotSelectionDecision === 'PASS_WITH_COOKING' && latestCooking) {
-            if (latestCooking.status === 'Pass' || latestCooking.status === 'Medium') {
-                statusRows.push({ label: has100GmsOnly ? '100-Gms/Pass' : 'Pass', bg: '#c8e6c9', color: '#1b5e20' });
-            } else if (latestCooking.status === 'Recheck') {
-                statusRows.push({ label: 'Cooking Recheck', bg: '#e3f2fd', color: '#1565c0' });
-            } else if (latestCooking.status === 'Pending') {
-                statusRows.push({ label: 'Pending', bg: '#fff8e1', color: '#f57f17' });
-            }
-        } else if (entry.lotSelectionDecision === 'FAIL' && entry.workflowStatus !== 'FAILED' && latestQuality?.status === 'Pending') {
-            statusRows.push({ label: 'Pending Sample Selection', bg: '#f3e5f5', color: '#7b1fa2' });
-        } else if (entry.lotSelectionDecision === 'FAIL' && entry.workflowStatus !== 'FAILED' && latestQuality?.status === 'Fail') {
+        } else if (entry.workflowStatus === 'FAILED' || latestCooking?.status === 'Fail' || latestQuality?.status === 'Fail') {
             statusRows.push({ label: 'Fail', bg: '#ffcdd2', color: '#b71c1c' });
-        } else if (entry.lotSelectionDecision === 'FAIL' && entry.workflowStatus !== 'FAILED' && (latestQuality?.status === 'Rechecking' || latestQuality?.status === 'Resampling')) {
-            statusRows.push({ label: 'Resampling', bg: '#fff3e0', color: '#f57c00' });
-        } else if (latestQuality?.status === 'Rechecking') {
-            statusRows.push({ label: 'Quality Recheck', bg: '#e3f2fd', color: '#1565c0' });
         } else if (entry.lotSelectionDecision === 'FAIL' && entry.workflowStatus !== 'FAILED') {
-            statusRows.push({ label: 'Resampling', bg: '#fff3e0', color: '#f57c00' });
+            statusRows.push({ label: 'Resample', bg: '#fff3e0', color: '#f57c00' });
+        } else if (
+            entry.lotSelectionDecision === 'PASS_WITHOUT_COOKING'
+            || (entry.lotSelectionDecision === 'PASS_WITH_COOKING' && (latestCooking?.status === 'Pass' || latestCooking?.status === 'Medium'))
+        ) {
+            statusRows.push({ label: has100GmsOnly ? '100-Gms Done' : 'Pass', bg: has100GmsOnly ? '#fff8e1' : '#c8e6c9', color: has100GmsOnly ? '#f57f17' : '#1b5e20' });
+        } else if (latestQuality?.type === '100-Gms') {
+            statusRows.push({ label: '100-Gms Done', bg: '#fff8e1', color: '#f57f17' });
+        } else if (latestQuality?.type === 'Done' && entry.workflowStatus !== 'STAFF_ENTRY') {
+            statusRows.push({ label: 'Pending', bg: '#fff8e1', color: '#f57f17' });
         } else {
-            if (latestQuality && latestQuality.type !== 'Pending' && latestQuality.type !== 'Recheck') {
-                statusRows.push({
-                    label: latestQuality.type === '100-Gms' ? '100-Gms Done' : 'Quality Done',
-                    bg: latestQuality.type === '100-Gms' ? '#fff8e1' : '#e8f5e9',
-                    color: latestQuality.type === '100-Gms' ? '#f57f17' : '#2e7d32'
-                });
-            }
-
-            if (entry.workflowStatus === 'LOT_SELECTION' && latestQuality && latestQuality.status !== 'Rechecking') {
-                statusRows.push({ label: 'Pending Sample Selection', bg: '#f3e5f5', color: '#7b1fa2' });
-            }
-        }
-
-        if (statusRows.length === 0) {
             statusRows.push(getWorkflowStatusMeta(entry.workflowStatus));
         }
 
@@ -949,6 +1013,20 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
 
     return (
         <div>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                <button
+                    onClick={() => setActiveView('sample-book')}
+                    style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: '700', fontSize: '13px', background: activeView === 'sample-book' ? '#1565c0' : '#cbd5e1', color: activeView === 'sample-book' ? '#fff' : '#1e293b' }}
+                >
+                    Paddy Sample Book
+                </button>
+                <button
+                    onClick={() => setActiveView('edit-approvals')}
+                    style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: '700', fontSize: '13px', background: activeView === 'edit-approvals' ? '#7c3aed' : '#cbd5e1', color: activeView === 'edit-approvals' ? '#fff' : '#1e293b' }}
+                >
+                    Approval For Edit {approvalEntries.length > 0 ? `(${approvalEntries.length})` : ''}
+                </button>
+            </div>
             {/* Filter Bar */}
             <div style={{ marginBottom: '0px' }}>
                 <button onClick={() => setFiltersVisible(!filtersVisible)}
@@ -1010,6 +1088,73 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                 )}
             </div>
 
+            {activeView === 'edit-approvals' ? (
+                <div style={{ overflowX: 'auto', backgroundColor: 'white', border: '1px solid #ddd', marginTop: '12px' }}>
+                    {loading ? (
+                        <div style={{ textAlign: 'center', padding: '20px', color: '#666' }}>Loading...</div>
+                    ) : approvalEntries.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>No edit approvals pending</div>
+                    ) : (
+                        <table style={{ width: '100%', minWidth: '1250px', borderCollapse: 'collapse' }}>
+                            <thead>
+                                <tr style={{ background: '#1f2a44', color: '#fff' }}>
+                                    {['Sl No', 'Type', 'Bags', 'Pkg', 'Party Name', 'Paddy Location', 'Variety', 'Request', 'Reason', 'Requested By', 'Requested At', 'Action'].map((header) => (
+                                        <th key={header} style={{ border: '1px solid #000', padding: '8px 10px', fontSize: '12px', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>{header}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {approvalEntries.map((entry, index) => {
+                                    const entryPending = String(entry.entryEditApprovalStatus || '').toLowerCase() === 'pending';
+                                    const qualityPending = String(entry.qualityEditApprovalStatus || '').toLowerCase() === 'pending';
+                                    const requestType = qualityPending ? 'Quality Edit' : 'Entry Edit';
+                                    const requestReason = qualityPending ? (entry.qualityEditApprovalReason || '-') : (entry.entryEditApprovalReason || '-');
+                                    const requestedBy = qualityPending ? (entry.qualityEditApprovalRequestedByName || getCreatorLabel(entry)) : (entry.entryEditApprovalRequestedByName || getCreatorLabel(entry));
+                                    const requestedAt = qualityPending ? entry.qualityEditApprovalRequestedAt : entry.entryEditApprovalRequestedAt;
+                                    const partyDisplay = getPartyDisplayParts(entry);
+                                    return (
+                                        <tr key={`${entry.id}-${requestType}`} style={{ background: index % 2 === 0 ? '#fff7ed' : '#ffffff' }}>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle', fontWeight: 700 }}>{entry.serialNo || index + 1}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle', fontWeight: '700' }}>{entry.entryType === 'DIRECT_LOADED_VEHICLE' ? 'RL' : entry.entryType === 'LOCATION_SAMPLE' ? 'LS' : 'MS'}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle' }}>{entry.bags}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle' }}>{entry.packaging}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', verticalAlign: 'middle', minWidth: '180px' }}>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openEntryDetail(entry)}
+                                                        style={{ background: 'transparent', border: 'none', color: '#1565c0', textDecoration: 'underline', cursor: 'pointer', fontWeight: 700, fontSize: '13px', padding: 0, textAlign: 'left' }}
+                                                    >
+                                                        {partyDisplay.label}
+                                                    </button>
+                                                    {partyDisplay.showLorrySecondLine ? (
+                                                        <div style={{ fontSize: '12px', color: '#1565c0', fontWeight: 600 }}>{partyDisplay.lorryText}</div>
+                                                    ) : null}
+                                                </div>
+                                            </td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', verticalAlign: 'middle' }}>{toTitleCase(entry.location || '-')}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', verticalAlign: 'middle' }}>{toTitleCase(entry.variety || '-')}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle', fontWeight: '700', color: '#7c3aed' }}>{requestType}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', minWidth: '220px', verticalAlign: 'middle', lineHeight: 1.4 }}>{requestReason}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', verticalAlign: 'middle' }}>{requestedBy}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{formatShortDateTime(requestedAt || null) || '-'}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                                    <button onClick={() => handleApprovalDecision(entry, qualityPending ? 'quality' : 'entry', 'approve')} style={{ padding: '5px 10px', border: 'none', borderRadius: '4px', background: '#2e7d32', color: '#fff', cursor: 'pointer', fontWeight: '700' }}>Approve</button>
+                                                    <button onClick={() => handleApprovalDecision(entry, qualityPending ? 'quality' : 'entry', 'reject')} style={{ padding: '5px 10px', border: 'none', borderRadius: '4px', background: '#c62828', color: '#fff', cursor: 'pointer', fontWeight: '700' }}>Reject</button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            ) : null}
+
+            {activeView === 'sample-book' ? (
+            <>
             {/* Entries grouped by Date → Broker */}
             <div style={{ overflowX: 'auto', backgroundColor: 'white', border: '1px solid #ddd' }}>
                 {loading ? (
@@ -1242,6 +1387,8 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                     })
                 )}
             </div>
+            </>
+            ) : null}
 
             {/* Recheck Modal */}
             {recheckModal.isOpen && recheckModal.entry && (
@@ -1309,7 +1456,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                     if (!off && versions.length === 0) return null;
 
                                     return (
-                                        <div style={{ position: 'absolute', top: 24, right: 24, width: 340, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                        <div style={{ position: 'absolute', top: 24, right: 24, width: 430, display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                             <h4 style={{ margin: 0, fontSize: '13px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '8px', fontWeight: '900' }}>Pricing & Offers</h4>
                                             {(off?.finalPrice || off?.finalBaseRate) && (
                                                 <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px' }}>
@@ -1318,16 +1465,20 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                                     <div style={{ fontSize: '11px', fontWeight: '700', color: '#15803d', marginTop: '4px' }}>{(off.finalBaseRateType || off.baseRateType || '').replace(/_/g, '/')} / {formatRateUnitLabel(off.finalBaseRateUnit || off.baseRateUnit)}</div>
                                                 </div>
                                             )}
-                                            {versions.length > 0 && versions.map((ov, i) => (
-                                                <div key={i} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px' }}>
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                                                        <span style={{ fontSize: '10px', fontWeight: '900', background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: '4px' }}>{ov.key}</span>
-                                                        {(ov.finalPrice || ov.finalBaseRate) && <span style={{ fontSize: '10px', fontWeight: '900', background: '#dcfce7', color: '#15803d', padding: '2px 6px', borderRadius: '4px' }}>PASSED</span>}
-                                                    </div>
-                                                    <div style={{ fontSize: '15px', fontWeight: '900', color: '#1e293b' }}>Rs {toNumberText(ov.offerBaseRateValue || ov.offeringPrice || 0)}</div>
-                                                    <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>{(ov.baseRateType || '').replace(/_/g, '/')}</div>
+                                            {versions.length > 0 && (
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
+                                                    {versions.map((ov, i) => (
+                                                        <div key={i} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px', minWidth: 0 }}>
+                                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', gap: '6px' }}>
+                                                                <span style={{ fontSize: '10px', fontWeight: '900', background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: '4px', textTransform: 'uppercase' }}>{ov.key}</span>
+                                                                {(ov.finalPrice || ov.finalBaseRate) && <span style={{ fontSize: '10px', fontWeight: '900', background: '#dcfce7', color: '#15803d', padding: '2px 6px', borderRadius: '4px' }}>PASSED</span>}
+                                                            </div>
+                                                            <div style={{ fontSize: '15px', fontWeight: '900', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Rs {toNumberText(ov.offerBaseRateValue || ov.offeringPrice || 0)}</div>
+                                                            <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(ov.baseRateType || '').replace(/_/g, '/')}</div>
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            ))}
+                                            )}
                                             {versions.length === 0 && (off?.offerBaseRateValue || off?.offeringPrice) && (
                                                 <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px' }}>
                                                     <div style={{ fontSize: '10px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase', marginBottom: '4px' }}>Active Offer</div>
@@ -1339,7 +1490,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                     );
                                 })()}
                                 {/* Basic Info Grid */}
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px', maxWidth: detailMode === 'history' ? '100%' : 'calc(100% - 360px)' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px', maxWidth: detailMode === 'history' ? '100%' : 'calc(100% - 450px)' }}>
                                     {[
                                         ['Date', new Date(detailEntry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })],
                                         ['Total Bags', detailEntry.bags?.toLocaleString('en-IN')],
@@ -1352,7 +1503,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                         </div>
                                     ))}
                                 </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '24px', maxWidth: detailMode === 'history' ? '100%' : 'calc(100% - 360px)' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '24px', maxWidth: detailMode === 'history' ? '100%' : 'calc(100% - 450px)' }}>
                                     <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                                         <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Party Name</div>
                                         {(() => {
@@ -1553,7 +1704,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                                     <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px' }}>
                                                         <div style={{ fontSize: '11px', fontWeight: '800', color: '#1d4ed8', marginBottom: '8px', textTransform: 'uppercase' }}>Quality Photo</div>
                                                         <img
-                                                            src={`${API_URL.replace('/api', '')}${qualityPhotoUrl}`}
+                                                            src={resolveMediaUrl(qualityPhotoUrl)}
                                                             alt="Quality"
                                                             style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e0e0e0' }}
                                                         />
@@ -1595,7 +1746,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                                 <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px' }}>
                                                     <div style={{ fontSize: '11px', fontWeight: '800', color: '#1d4ed8', marginBottom: '8px', textTransform: 'uppercase' }}>Quality Photo</div>
                                                     <img
-                                                        src={`${API_URL.replace('/api', '')}${qualityPhotoUrl}`}
+                                                        src={resolveMediaUrl(qualityPhotoUrl)}
                                                         alt="Quality"
                                                         style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e0e0e0' }}
                                                     />
@@ -1854,16 +2005,16 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                         {(detailEntry as any).godownImageUrl && (
                                             <div style={{ marginBottom: '10px' }}>
                                                 <div style={{ fontSize: '10px', color: '#666', marginBottom: '4px', fontWeight: '600' }}>Godown Image</div>
-                                                <a href={(detailEntry as any).godownImageUrl} target="_blank" rel="noopener noreferrer">
-                                                    <img src={(detailEntry as any).godownImageUrl} alt="Godown" style={{ maxWidth: '100%', maxHeight: '150px', borderRadius: '6px', border: '1px solid #e0e0e0' }} />
+                                                <a href={resolveMediaUrl((detailEntry as any).godownImageUrl)} target="_blank" rel="noopener noreferrer">
+                                                    <img src={resolveMediaUrl((detailEntry as any).godownImageUrl)} alt="Godown" style={{ maxWidth: '100%', maxHeight: '150px', borderRadius: '6px', border: '1px solid #e0e0e0' }} />
                                                 </a>
                                             </div>
                                         )}
                                         {(detailEntry as any).paddyLotImageUrl && (
                                             <div style={{ marginBottom: '10px' }}>
                                                 <div style={{ fontSize: '10px', color: '#666', marginBottom: '4px', fontWeight: '600' }}>Paddy Lot Image</div>
-                                                <a href={(detailEntry as any).paddyLotImageUrl} target="_blank" rel="noopener noreferrer">
-                                                    <img src={(detailEntry as any).paddyLotImageUrl} alt="Paddy Lot" style={{ maxWidth: '100%', maxHeight: '150px', borderRadius: '6px', border: '1px solid #e0e0e0' }} />
+                                                <a href={resolveMediaUrl((detailEntry as any).paddyLotImageUrl)} target="_blank" rel="noopener noreferrer">
+                                                    <img src={resolveMediaUrl((detailEntry as any).paddyLotImageUrl)} alt="Paddy Lot" style={{ maxWidth: '100%', maxHeight: '150px', borderRadius: '6px', border: '1px solid #e0e0e0' }} />
                                                 </a>
                                             </div>
                                         )}
@@ -1898,10 +2049,13 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                         style={{
                             background: '#ffffff',
                             width: '100%',
-                            maxWidth: '720px',
+                            maxWidth: '1200px',
                             borderRadius: '10px',
                             boxShadow: '0 16px 50px rgba(0,0,0,0.25)',
-                            overflow: 'hidden'
+                            overflow: 'hidden',
+                            maxHeight: '90vh',
+                            display: 'flex',
+                            flexDirection: 'column'
                         }}
                         onClick={(e) => e.stopPropagation()}
                     >
@@ -1913,7 +2067,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                 {getPartyLabel(pricingDetail.entry)} | {toTitleCase(pricingDetail.entry.variety)} | {toTitleCase(pricingDetail.entry.location)}
                             </div>
                         </div>
-                        <div style={{ padding: '16px 18px 18px' }}>
+                        <div style={{ padding: '16px 18px 18px', overflowY: 'auto' }}>
                             {pricingDetail.entry.offering ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                                     {(() => {
@@ -1939,7 +2093,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                         }
 
                                         return (
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '12px' }}>
                                                 {visibleVersions.map((version, versionIndex) => {
                                                     const pricingVersion = pricingDetail.mode === 'offer'
                                                         ? {
@@ -1972,7 +2126,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
                                                             finalBaseRateUnit: version.baseRateUnit || offering.finalBaseRateUnit || offering.baseRateUnit
                                                         };
                                                     return (
-                                                        <div key={`${String(version.key || 'version')}-${versionIndex}`} style={{ border: '1px solid #dfe3e8', borderRadius: '10px', padding: '12px', background: '#fff' }}>
+                                                        <div key={`${String(version.key || 'version')}-${versionIndex}`} style={{ border: '1px solid #dfe3e8', borderRadius: '10px', padding: '12px', background: '#fff', minWidth: 0 }}>
                                                             <div style={{ fontSize: '12px', fontWeight: '800', color: pricingDetail.mode === 'offer' ? '#1565c0' : '#2e7d32', marginBottom: '10px' }}>
                                                                 {pricingDetail.mode === 'offer' ? getOfferSlotLabel(version.key) : (version.key ? `${getOfferSlotLabel(version.key)} Final` : 'Final')}
                                                             </div>

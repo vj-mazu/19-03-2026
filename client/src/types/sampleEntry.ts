@@ -67,6 +67,22 @@ export interface SampleEntry {
   godownImageUrl?: string;
   paddyLotImageUrl?: string;
   createdByUserId?: number;
+  staffPartyNameEdits?: number;
+  staffBagsEdits?: number;
+  staffEntryEditAllowance?: number;
+  staffQualityEditAllowance?: number;
+  entryEditApprovalStatus?: string | null;
+  entryEditApprovalReason?: string | null;
+  entryEditApprovalRequestedBy?: number | null;
+  entryEditApprovalRequestedAt?: string | null;
+  entryEditApprovalApprovedBy?: number | null;
+  entryEditApprovalApprovedAt?: string | null;
+  qualityEditApprovalStatus?: string | null;
+  qualityEditApprovalReason?: string | null;
+  qualityEditApprovalRequestedBy?: number | null;
+  qualityEditApprovalRequestedAt?: string | null;
+  qualityEditApprovalApprovedBy?: number | null;
+  qualityEditApprovalApprovedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

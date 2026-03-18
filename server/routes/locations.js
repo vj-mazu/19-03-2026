@@ -828,13 +828,25 @@ router.post('/brokers', auth, authorize('manager', 'admin'), async (req, res) =>
       return res.status(400).json({ error: 'Broker name is required' });
     }
 
-    // Check for duplicate name
+    // Check for duplicate active name. If the same broker was soft-deleted earlier, reactivate it.
     const existingName = await Broker.findOne({
       where: { name: name.trim().toUpperCase() }
     });
 
     if (existingName) {
-      return res.status(400).json({ error: 'Broker name already exists' });
+      if (existingName.isActive) {
+        return res.status(400).json({ error: 'Broker name already exists' });
+      }
+
+      await existingName.update({
+        isActive: true,
+        description: description ? description.trim() : existingName.description
+      });
+
+      return res.status(201).json({
+        message: 'Broker reactivated successfully',
+        broker: existingName
+      });
     }
 
     const broker = await Broker.create({
@@ -868,12 +880,13 @@ router.put('/brokers/:id', auth, authorize('manager', 'admin'), async (req, res)
 
     // Check for duplicate name (excluding current broker)
     if (normalizedName && normalizedName !== broker.name) {
-      const existingName = await Broker.findOne({
-        where: {
-          name: normalizedName,
-          id: { [Op.ne]: req.params.id }
-        }
-      });
+        const existingName = await Broker.findOne({
+          where: {
+            name: normalizedName,
+            id: { [Op.ne]: req.params.id },
+            isActive: true
+          }
+        });
       if (existingName) {
         return res.status(400).json({ error: 'Broker name already exists' });
       }

@@ -66,18 +66,13 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
   const [filterDateTo, setFilterDateTo] = useState('');
   const [filterBroker, setFilterBroker] = useState('');
 
-  const [paddySupervisors, setPaddySupervisors] = useState<{ id: number; username: string; staffType?: string | null }[]>([]);
+  const [paddySupervisors, setPaddySupervisors] = useState<{ id: number; username: string; fullName?: string | null; staffType?: string | null }[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
-  const locationSupervisorSet = useMemo(
-    () => new Set(paddySupervisors.map((item) => String(item.username || '').trim().toLowerCase()).filter(Boolean)),
-    [paddySupervisors]
-  );
   const isResampleAssigned = (entry: ResampleEntry) => {
     const assignedName = String(entry.sampleCollectedBy || '').trim().toLowerCase();
-    const isLocationStaff = !!assignedName
-      && assignedName !== 'broker office sample'
-      && locationSupervisorSet.has(assignedName);
-    return entry.lotSelectionDecision === 'FAIL' && isLocationStaff;
+    return entry.lotSelectionDecision === 'FAIL'
+      && !!assignedName
+      && assignedName !== 'broker office sample';
   };
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -85,7 +80,7 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
   const fetchSupervisors = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await axios.get<{ success: boolean; users: Array<{ id: number; username: string; staffType?: string | null }> }>(
+      const res = await axios.get<{ success: boolean; users: Array<{ id: number; username: string; fullName?: string | null; staffType?: string | null }> }>(
         `${API_URL}/sample-entries/paddy-supervisors`,
         {
           params: { staffType: 'location' },
@@ -103,6 +98,7 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
       setLoading(true);
       const token = localStorage.getItem('token');
       const params: any = { page, pageSize };
+      params.t = Date.now();
       if (filterDateFrom) params.startDate = filterDateFrom;
       if (filterDateTo) params.endDate = filterDateTo;
       if (filterBroker) params.broker = filterBroker;
@@ -166,6 +162,16 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
       await axios.put(`${API_URL}/sample-entries/${entry.id}`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
+      setEntries((prev) => prev.map((item) => (
+        item.id === entry.id
+          ? { ...item, sampleCollectedBy: selected }
+          : item
+      )));
+      setAssignments((prev) => {
+        const next = { ...prev };
+        delete next[entry.id];
+        return next;
+      });
       showNotification('Resample user assigned', 'success');
       loadEntries();
     } catch (error: any) {
@@ -175,7 +181,7 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
 
   return (
     <div style={{ padding: '0 8px' }}>
-      <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'flex-start', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '14px', color: '#666' }}>Showing {entries.length} of {total} resample lots</span>
         <button onClick={() => setFiltersVisible(!filtersVisible)} style={{ padding: '6px 14px', fontSize: '13px', background: filtersVisible ? '#e74c3c' : '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>{filtersVisible ? 'Hide Filters' : 'Filters'}</button>
       </div>
@@ -199,7 +205,7 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
                 brokerSeq++;
                 return (
                   <div key={brokerName} style={{ marginBottom: 0 }}>
-                    {brokerIdx === 0 && <div style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)', color: 'white', padding: '6px 10px', fontWeight: 700, fontSize: '14px', textAlign: 'center', letterSpacing: '0.5px' }}>{dateStr} Resample Assignments</div>}
+                    {brokerIdx === 0 && <div style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)', color: 'white', padding: '6px 10px', fontWeight: 700, fontSize: '14px', textAlign: 'left', letterSpacing: '0.5px' }}>{dateStr} Resample Assignments</div>}
                     <div style={{ background: '#e8eaf6', color: '#000', padding: '4px 10px', fontWeight: 700, fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ fontSize: '13.5px', fontWeight: 800 }}>{brokerSeq}.</span> {brokerName}</div>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', border: '1px solid #000' }}>
                       <thead style={{ position: 'sticky', top: 56, zIndex: 2 }}>
@@ -231,7 +237,7 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left' }}>{toTitleCase(entry.location)}</td>
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left' }}>{toTitleCase(entry.variety)}</td>
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left' }}>
-                              {getCollectorLabel(entry.sampleCollectedBy, paddySupervisors)}
+                              {getCollectorLabel(assignments[entry.id] ?? entry.sampleCollectedBy, paddySupervisors)}
                             </td>
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'center' }}>
                               <select
