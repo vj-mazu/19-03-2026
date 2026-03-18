@@ -11,22 +11,27 @@ const sanitizeDatabaseUrl = (value) => {
 };
 
 const maskDatabaseUrl = (value) => {
+  if (!value) return 'N/A';
   try {
-    const parsed = new URL(value);
-    if (parsed.password) parsed.password = '****';
-    return parsed.toString();
+    const url = new URL(String(value));
+    if (url.password) url.password = '****';
+    return url.toString();
   } catch (error) {
-    return String(value || '').replace(/:([^:@]+)@/, ':****@');
+    // If URL parsing fails (e.g., due to unencoded special characters in password),
+    // use a safer regex-based mask that preserves the host and port
+    const str = String(value);
+    const masked = str.replace(/(:\/\/[^:]+:)([^@/]+)(@)/, '$1****$3');
+    if (masked !== str) return masked;
+    // Fallback if password pattern not found
+    return str.replace(/:([^:@]+)@/, ':****@');
   }
 };
 
 let dbUrl = sanitizeDatabaseUrl(process.env.DATABASE_URL);
 if (dbUrl) {
-  try {
-    dbUrl = new URL(dbUrl).toString();
-  } catch (error) {
-    console.warn('Invalid DATABASE_URL format, using raw value:', error.message);
-  }
+  // CRITICAL FIX: Do NOT use `new URL(dbUrl).toString()` as it can mangle
+  // passwords containing unencoded special characters (like '#').
+  // We only use the masked version for logging.
   console.log('Attempting to connect with DATABASE_URL (masked):', maskDatabaseUrl(dbUrl));
 } else {
   console.log('No DATABASE_URL found, using individual environment variables.');

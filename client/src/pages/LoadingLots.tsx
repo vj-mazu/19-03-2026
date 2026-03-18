@@ -767,40 +767,62 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
     const raw = creator?.fullName || creator?.username || '';
     return raw ? toTitleCase(raw) : '-';
   };
+  const buildOrderedNameList = (values: Array<string | null | undefined>) => values
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const renderIndexedNames = (
+    names: string[],
+    formatter: (value: string) => string,
+    options?: { clickable?: boolean; onClick?: () => void; primaryColor?: string; secondaryColor?: string; }
+  ) => {
+    if (names.length === 0) return '-';
+    const clickable = options?.clickable === true && typeof options?.onClick === 'function';
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '4px',
+          lineHeight: '1.35',
+          fontWeight: 700,
+          color: '#1f2937',
+          fontSize: '13px',
+          cursor: clickable ? 'pointer' : 'default',
+          textDecoration: clickable ? 'underline' : 'none'
+        }}
+        onClick={clickable ? options?.onClick : undefined}
+      >
+        {names.map((name, index) => (
+          <div key={`${name}-${index}`} style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+            <span style={{ minWidth: '16px', color: '#64748b', fontWeight: 800 }}>{index + 1}.</span>
+            <span style={{ color: index === 0 ? (options?.primaryColor || '#1f2937') : (options?.secondaryColor || '#334155') }}>
+              {formatter(name)}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  };
 
   const renderCollectedByHistory = (entry: SampleEntry) => {
-    const names = (entry.sampleCollectedHistory || []).filter(Boolean).length > 0
-      ? (entry.sampleCollectedHistory || []).filter(Boolean)
-      : (entry.sampleCollectedBy ? [entry.sampleCollectedBy] : []);
-    const uniqueNames = normalizeCaseInsensitiveList(names);
-    if (uniqueNames.length === 0) return '-';
+    const names = buildOrderedNameList(
+      (entry.sampleCollectedHistory || []).filter(Boolean).length > 0
+        ? (entry.sampleCollectedHistory || [])
+        : (entry.sampleCollectedBy ? [entry.sampleCollectedBy] : [])
+    );
+    if (names.length === 0) return '-';
     const hasQualityHistory = (entry.qualityAttemptDetails || []).length > 0;
     const isGivenToOffice = (entry as any).sampleGivenToOffice;
 
-    if (isGivenToOffice && uniqueNames.length > 0) {
-      const officeNames = normalizeCaseInsensitiveList([getCreatorLabel(entry), getCollectorLabel(uniqueNames[0])]);
-      return (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center', lineHeight: '1.35' }}>
-          {officeNames.map((name, index) => (
-            <React.Fragment key={`${entry.id}-office-collected-${index}`}>
-              {index > 0 ? <span style={{ color: '#94a3b8', fontWeight: 700 }}>/</span> : null}
-              <span style={{ fontSize: index === 0 ? '12px' : '11px', fontWeight: 700, color: index === 0 ? '#0f766e' : '#1f2937' }}>
-                {name}
-              </span>
-            </React.Fragment>
-          ))}
-        </div>
-      );
+    if (isGivenToOffice && names.length > 0) {
+      const officeNames = buildOrderedNameList([getCreatorLabel(entry), getCollectorLabel(names[0])]);
+      return renderIndexedNames(officeNames, (name) => name, { primaryColor: '#0f766e', secondaryColor: '#1f2937' });
     }
 
-    return (
-      <div
-        style={{ lineHeight: '1.35', fontWeight: 700, color: '#1f2937', fontSize: '13px', cursor: hasQualityHistory ? 'pointer' : 'default', textDecoration: hasQualityHistory ? 'underline' : 'none' }}
-        onClick={() => hasQualityHistory && setQualityHistoryModal({ open: true, entry })}
-      >
-        {uniqueNames.map((name) => getCollectorLabel(name)).join(' / ')}
-      </div>
-    );
+    return renderIndexedNames(names, getCollectorLabel, {
+      clickable: hasQualityHistory,
+      onClick: () => setQualityHistoryModal({ open: true, entry })
+    });
   };
 
   const qualityModalEntry = qualityHistoryModal.entry;
@@ -1003,10 +1025,10 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                   ].sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0));
                                 }
                               }
-                              const historyReportedNames = (entry.qualityReportHistory || [])
-                                .filter(Boolean)
-                                .map((name) => String(name).trim());
-                              const sampleReportNames = normalizeCaseInsensitiveList(
+                              const historyReportedNames = buildOrderedNameList(
+                                (entry.qualityReportHistory || [])
+                              );
+                              const sampleReportNames = buildOrderedNameList(
                                 qualityAttempts.length > 0
                                   ? qualityAttempts
                                     .sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0))
@@ -1170,20 +1192,10 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                   <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '13px', lineHeight: '1.35', wordBreak: 'break-word' }}>{renderCollectedByHistory(entry)}</td>
                                   <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '13px', lineHeight: '1.35', wordBreak: 'break-word' }}>
                                     {sampleReportNames.length === 0 ? '-' : (
-                                      <div
-                                        style={{
-                                          lineHeight: '1.35',
-                                          fontWeight: 700,
-                                          color: '#1f2937',
-                                          whiteSpace: 'normal',
-                                          fontSize: '13px',
-                                          cursor: (entry.qualityAttemptDetails || []).length > 0 ? 'pointer' : 'default',
-                                          textDecoration: (entry.qualityAttemptDetails || []).length > 0 ? 'underline' : 'none'
-                                        }}
-                                        onClick={() => (entry.qualityAttemptDetails || []).length > 0 && setQualityHistoryModal({ open: true, entry })}
-                                      >
-                                        {sampleReportNames.map((name) => getCollectorLabel(name)).join(' / ')}
-                                      </div>
+                                      renderIndexedNames(sampleReportNames, getCollectorLabel, {
+                                        clickable: (entry.qualityAttemptDetails || []).length > 0,
+                                        onClick: () => setQualityHistoryModal({ open: true, entry })
+                                      })
                                     )}
                                   </td>
                                   <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '12px', lineHeight: '1.2', fontWeight: 700, color: getEntrySmellLabel(entry) === '-' ? '#666' : '#8a4b00', whiteSpace: 'nowrap' }}>
@@ -1395,10 +1407,9 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
             {qualityAttemptDetails.length === 0 ? (
               <div style={{ fontSize: '13px', color: '#64748b' }}>No quality attempt history found.</div>
             ) : (
-              <div style={{ overflowX: 'auto', border: '1px solid #d1d5db', borderRadius: '10px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {(() => {
-                  const columns = [
-                    { label: 'Sample', value: (attempt: QualityAttemptDetail) => `${getAttemptLabel(attempt.attemptNo)} Sample` },
+                  const fields = [
                     { label: 'Reported By', value: (attempt: QualityAttemptDetail) => attempt.reportedBy ? toSentenceCase(attempt.reportedBy) : '-' },
                     { label: 'Reported At', value: (attempt: QualityAttemptDetail) => attempt.createdAt ? new Date(attempt.createdAt).toLocaleString('en-IN') : '-' },
                     { label: 'Moisture', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.moisture, '%') },
@@ -1420,44 +1431,29 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                     ...(qualityModalEntry.entryType === 'RICE_SAMPLE'
                       ? [{ label: 'Grams', value: (attempt: QualityAttemptDetail) => attempt.gramsReport || '-' }]
                       : [])
-                  ].filter((column) => {
-                    if (column.label === 'Sample' || column.label === 'Reported By' || column.label === 'Reported At') return true;
-                    return qualityAttemptDetails.some((attempt) => isMeaningfulCellValue(column.value(attempt)));
+                  ].filter((field) => {
+                    if (field.label === 'Reported By' || field.label === 'Reported At') return true;
+                    return qualityAttemptDetails.some((attempt) => isMeaningfulCellValue(field.value(attempt)));
                   });
 
                   return (
-                    <table style={{ width: '100%', minWidth: `${Math.max(1100, columns.length * 110)}px`, borderCollapse: 'collapse', fontSize: '12px' }}>
-                      <thead>
-                        <tr style={{ background: '#1e3a8a', color: '#fff' }}>
-                          {columns.map((column) => (
-                            <th key={`${qualityModalEntry.id}-quality-col-${column.label}`} style={{ border: '1px solid #1e40af', padding: '8px', textAlign: column.label === 'Sample' ? 'left' : 'center', whiteSpace: 'nowrap' }}>
-                              {column.label}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {qualityAttemptDetails.map((attempt, rowIndex) => (
-                          <tr key={`${qualityModalEntry.id}-quality-attempt-${attempt.attemptNo}`} style={{ background: rowIndex % 2 === 0 ? '#ffffff' : '#f8fafc' }}>
-                            {columns.map((column) => (
-                              <td
-                                key={`${qualityModalEntry.id}-quality-attempt-${attempt.attemptNo}-${column.label}`}
-                                style={{
-                                  border: '1px solid #e5e7eb',
-                                  padding: '7px 8px',
-                                  color: '#111827',
-                                  fontWeight: column.label === 'Sample' ? 700 : 500,
-                                  textAlign: column.label === 'Sample' ? 'left' : 'center',
-                                  whiteSpace: column.label === 'Reported At' ? 'nowrap' : 'normal'
-                                }}
-                              >
-                                {column.value(attempt)}
-                              </td>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {qualityAttemptDetails.map((attempt) => (
+                        <div key={`${qualityModalEntry.id}-quality-attempt-${attempt.attemptNo}`} style={{ border: '1px solid #d1d5db', borderRadius: '10px', padding: '12px', background: '#f8fafc' }}>
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#1e3a8a', marginBottom: '10px' }}>
+                            {getAttemptLabel(attempt.attemptNo)} Sample
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                            {fields.map((field) => (
+                              <div key={`${qualityModalEntry.id}-quality-attempt-${attempt.attemptNo}-${field.label}`} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', background: '#fff', padding: '10px' }}>
+                                <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748b', marginBottom: '4px' }}>{field.label}</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#111827', lineHeight: '1.35', wordBreak: 'break-word' }}>{field.value(attempt)}</div>
+                              </div>
                             ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   );
                 })()}
               </div>
