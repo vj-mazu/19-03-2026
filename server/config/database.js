@@ -1,37 +1,33 @@
 const { Sequelize } = require('sequelize');
 
 // Database configuration with performance optimizations
-let dbUrl = process.env.DATABASE_URL;
-
-// Sanitize the URL if it exists (remove quotes and whitespace)
-if (dbUrl) {
-  dbUrl = dbUrl.trim();
-  if ((dbUrl.startsWith('"') && dbUrl.endsWith('"')) || (dbUrl.startsWith("'") && dbUrl.endsWith("'"))) {
-    dbUrl = dbUrl.slice(1, -1);
+const sanitizeDatabaseUrl = (value) => {
+  if (!value) return '';
+  const trimmed = String(value).trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
   }
-  // Encode special characters in password (e.g. @ # etc.) to prevent URL parse errors
+  return trimmed;
+};
+
+const maskDatabaseUrl = (value) => {
   try {
-    const match = dbUrl.match(/^(postgresql?:\/\/)([^:]+):([^@]+)@(.+)$/);
-    if (match) {
-      const [, protocol, user, password, rest] = match;
-      // Find the LAST @ to split user:password from host (handles @ in password)
-      const lastAtIndex = dbUrl.lastIndexOf('@');
-      const beforeAt = dbUrl.substring(0, lastAtIndex);
-      const afterAt = dbUrl.substring(lastAtIndex + 1);
-      const protocolEnd = beforeAt.indexOf('://') + 3;
-      const userPass = beforeAt.substring(protocolEnd);
-      const colonIndex = userPass.indexOf(':');
-      const actualUser = userPass.substring(0, colonIndex);
-      const actualPassword = userPass.substring(colonIndex + 1);
-      dbUrl = beforeAt.substring(0, protocolEnd) + encodeURIComponent(actualUser) + ':' + encodeURIComponent(actualPassword) + '@' + afterAt;
-    }
-  } catch (e) {
-    console.warn('Could not encode DATABASE_URL password, using as-is:', e.message);
+    const parsed = new URL(value);
+    if (parsed.password) parsed.password = '****';
+    return parsed.toString();
+  } catch (error) {
+    return String(value || '').replace(/:([^:@]+)@/, ':****@');
   }
-}
+};
 
+let dbUrl = sanitizeDatabaseUrl(process.env.DATABASE_URL);
 if (dbUrl) {
-  console.log('Attempting to connect with DATABASE_URL (masked):', dbUrl.replace(/:([^:@]+)@/, ':****@'));
+  try {
+    dbUrl = new URL(dbUrl).toString();
+  } catch (error) {
+    console.warn('Invalid DATABASE_URL format, using raw value:', error.message);
+  }
+  console.log('Attempting to connect with DATABASE_URL (masked):', maskDatabaseUrl(dbUrl));
 } else {
   console.log('No DATABASE_URL found, using individual environment variables.');
 }
