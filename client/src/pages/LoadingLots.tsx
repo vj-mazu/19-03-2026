@@ -52,6 +52,7 @@ interface SampleEntry {
   lotSelectionAt?: string;
   finalPrice?: number;
   creator?: { id: number; username: string; fullName?: string };
+  updatedAt?: string;
 }
 
 interface QualityAttemptDetail {
@@ -78,6 +79,26 @@ interface QualityAttemptDetail {
   gramsReport?: string | null;
   smellHas?: boolean;
   smellType?: string | null;
+  moistureRaw?: number | string | null;
+  cutting1Raw?: number | string | null;
+  cutting2Raw?: number | string | null;
+  bend1Raw?: number | string | null;
+  bend2Raw?: number | string | null;
+  grainsCountRaw?: number | string | null;
+  mixRaw?: number | string | null;
+  mixSRaw?: number | string | null;
+  mixLRaw?: number | string | null;
+  kanduRaw?: number | string | null;
+  oilRaw?: number | string | null;
+  skRaw?: number | string | null;
+  wbRRaw?: number | string | null;
+  wbBkRaw?: number | string | null;
+  wbTRaw?: number | string | null;
+  paddyWbRaw?: number | string | null;
+  smixEnabled?: boolean;
+  lmixEnabled?: boolean;
+  paddyWbEnabled?: boolean;
+  updatedAt?: string;
 }
 
 interface CookingAttemptDetail {
@@ -865,19 +886,23 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   };
   const getCollectedByDisplay = (entry: SampleEntry) => {
     const creatorLabel = getCreatorLabel(entry);
-    const fallbackCollector = [
-      entry.sampleCollectedBy,
-      ...(((entry as any)?.resampleCollectedHistory || []) as string[]),
-      ...(((entry as any)?.sampleCollectedHistory || []) as string[])
-    ].find((value) => typeof value === 'string' && value.trim() !== '');
+    const history = entry.sampleCollectedHistory || [];
+    const fallbackCollector = history.length > 0 
+      ? history[0] 
+      : entry.sampleCollectedBy;
     const collectorLabel = getCollectorLabel(fallbackCollector || null);
+    
+    // For resamples or office samples, we still want to show the original collector
+    // and potentially the office name if it's an office sample.
     const isResample = String((entry as any)?.lotSelectionDecision || '').toUpperCase() === 'FAIL' || Boolean((entry as any)?.resampledLotId);
-    const isGivenToOffice = Boolean((entry as any)?.sampleGivenToOffice) || isResample;
+    const isGivenToOffice = Boolean((entry as any)?.sampleGivenToOffice);
+
     if (isGivenToOffice) {
       const primary = creatorLabel !== '-' ? creatorLabel : collectorLabel;
       const secondary = collectorLabel !== '-' && collectorLabel !== primary ? collectorLabel : null;
       return { primary, secondary, highlightPrimary: true };
     }
+
     return {
       primary: collectorLabel !== '-' ? collectorLabel : creatorLabel,
       secondary: null,
@@ -918,20 +943,28 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   };
 
   const renderCollectedByHistory = (entry: SampleEntry) => {
-    const names = buildOrderedNameList(
-      (entry.sampleCollectedHistory || []).filter(Boolean).length > 0
-        ? (entry.sampleCollectedHistory || [])
-        : (entry.sampleCollectedBy ? [entry.sampleCollectedBy] : [])
-    );
-    if (names.length === 0) return '-';
-    const isGivenToOffice = (entry as any).sampleGivenToOffice;
-
-    if (isGivenToOffice && names.length > 0) {
-      const officeNames = buildOrderedNameList([getCreatorLabel(entry), getCollectorLabel(names[0])]);
-      return renderIndexedNames(officeNames, (name) => name, { primaryColor: '#7e22ce', secondaryColor: '#1f2937' });
+    const history = entry.sampleCollectedHistory || [];
+    
+    // For single collector or empty history, just show the primary collector
+    if (history.length <= 1) {
+      const firstCollector = history.length > 0 ? history[0] : entry.sampleCollectedBy;
+      if (!firstCollector) return '-';
+      
+      const isGivenToOffice = (entry as any).sampleGivenToOffice;
+      if (isGivenToOffice) {
+        const officeNames = buildOrderedNameList([getCreatorLabel(entry), getCollectorLabel(firstCollector)]);
+        return renderIndexedNames(officeNames, (name) => name, { primaryColor: '#7e22ce', secondaryColor: '#1f2937' });
+      }
+      return (
+        <div style={{ fontWeight: 700, color: '#1f2937', fontSize: '13px' }}>
+          {getCollectorLabel(firstCollector)}
+        </div>
+      );
     }
 
-    return renderIndexedNames(names, getCollectorLabel);
+    // For multiple collectors (resample), show indexed names (1. Name, 2. Name)
+    const formattedNames = history.map(h => getCollectorLabel(h));
+    return renderIndexedNames(formattedNames, (name) => name);
   };
 
   const qualityModalEntry = qualityHistoryModal.entry;
@@ -1132,7 +1165,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                               const qualityAttempts = [...qualityAttemptsBase];
                               const hasQualityReport = qualityAttempts.length > 0 || !!qualityData.reportedBy || !!qualityData.id;
                               const isResampleCase = qualityAttempts.length > 1 || String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL';
-                              const lotSelectionTs = toTs(entry.lotSelectionAt || entry.updatedAt || entry.createdAt || '');
+                              const lotSelectionTs = toTs((entry as any).lotSelectionAt || (entry as any).updatedAt || (entry as any).createdAt || '');
                               const historyReportedNames = buildOrderedNameList(
                                 (entry.qualityReportHistory || [])
                               );
@@ -1144,6 +1177,14 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                   : (historyReportedNames.length > 0
                                     ? historyReportedNames.map((name) => String(name || qualityData.reportedBy || '').trim())
                                     : (entry.qualityParameters?.reportedBy ? [String(entry.qualityParameters.reportedBy).trim()] : []))
+                              );
+
+                              const sampleCollectedNames = buildOrderedNameList(
+                                (entry.sampleCollectedHistory && entry.sampleCollectedHistory.length > 1)
+                                  ? entry.sampleCollectedHistory
+                                  : (sampleReportNames.length > 1 && entry.sampleCollectedBy
+                                    ? [entry.sampleCollectedBy, ...Array(sampleReportNames.length - 1).fill(entry.sampleCollectedBy)]
+                                    : (entry.sampleCollectedBy ? [entry.sampleCollectedBy] : []))
                               );
                               const isResamplePendingAdminAssign = entry.lotSelectionDecision === 'FAIL' && !entry.sampleCollectedBy;
                               const cookingHistoryRaw = Array.isArray(entry.cookingReport?.history) ? entry.cookingReport?.history || [] : [];
@@ -1297,7 +1338,13 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                   </td>
                                   <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '13px', wordBreak: 'break-word' }}>{toTitleCase(entry.location) || '-'}</td>
                                   <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '13px', wordBreak: 'break-word' }}>{toTitleCase(entry.variety) || '-'}</td>
-                                  <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '13px', lineHeight: '1.35', wordBreak: 'break-word' }}>{renderCollectedByHistory(entry)}</td>
+                                  <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '13px', lineHeight: '1.35', wordBreak: 'break-word' }}>
+                                    {sampleCollectedNames.length === 0 ? '-' : (
+                                      sampleCollectedNames.length > 1
+                                        ? renderIndexedNames(sampleCollectedNames, getCollectorLabel)
+                                        : <div style={{ fontWeight: 700, color: '#1f2937' }}>{getCollectorLabel(sampleCollectedNames[0])}</div>
+                                    )}
+                                  </td>
                                   <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left', fontSize: '13px', lineHeight: '1.35', wordBreak: 'break-word' }}>
                                     {sampleReportNames.length === 0 ? '-' : (
                                       renderIndexedNames(sampleReportNames, getCollectorLabel)
@@ -1553,10 +1600,22 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
 
         const QItem = ({ label, value }: { label: string; value: React.ReactNode }) => {
           const isBold = ['Grains Count', 'Paddy WB'].includes(label);
+          const isPaddyWb = label === 'Paddy WB';
           return (
-            <div style={{ background: '#f8f9fa', padding: '6px 8px', borderRadius: '6px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
-              <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '2px', fontWeight: '600', textTransform: 'uppercase' }}>{label}</div>
-              <div style={{ fontSize: '12px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
+            <div style={{ 
+              background: isPaddyWb ? '#f0f9ff' : '#fff', 
+              padding: '10px 8px', 
+              borderRadius: '8px', 
+              border: isPaddyWb ? '1px solid #bae6fd' : '1px solid #e2e8f0', 
+              textAlign: 'center',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+              minHeight: '54px'
+            }}>
+              <div style={{ fontSize: '9px', color: '#94a3b8', marginBottom: '4px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.025em' }}>{label}</div>
+              <div style={{ fontSize: '15px', fontWeight: '800', color: isBold ? '#0f172a' : '#334155' }}>{value || '-'}</div>
             </div>
           );
         };
@@ -1614,99 +1673,91 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
 
               {/* Body Content */}
               <div style={{ padding: '24px', backgroundColor: '#fff', borderBottomLeftRadius: '10px', borderBottomRightRadius: '10px', position: 'relative' }}>
-                {/* Basic Info Grid */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px' }}>
-                  {[
-                    ['Date', new Date(qualityModalEntry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })],
-                    ['Total Bags', qualityModalEntry.bags?.toLocaleString('en-IN')],
-                    ['Packaging', `${qualityModalEntry.packaging || '75'} Kg`],
-                    ['Variety', toTitleCase(qualityModalEntry.variety || '-')],
-                  ].map(([label, value], i) => (
-                    <div key={i} style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                      <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-                      <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b' }}>{value || '-'}</div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '24px' }}>
-                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                    <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Party Name</div>
-                    <div style={{ fontSize: '15px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {toTitleCase(qualityModalEntry.partyName) || '-'}
-                    </div>
-                  </div>
-                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                    <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Location</div>
-                    <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{toTitleCase(qualityModalEntry.location || '-')}</div>
-                  </div>
-                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                    <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Collected By</div>
-                    {(() => {
-                      const collectedByDisplay = getCollectedByDisplay(qualityModalEntry);
-                      if (collectedByDisplay.secondary) {
-                        return (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', overflow: 'hidden' }}>
-                            <span style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#9c27b0' : '#1e293b' }}>
-                              {collectedByDisplay.primary}
-                            </span>
-                            <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: '800' }}>/</span>
-                            <span style={{ fontSize: '12px', fontWeight: '600', color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {collectedByDisplay.secondary}
-                            </span>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#9c27b0' : '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {collectedByDisplay.primary}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-
+                 {/* Basic Info Grid - Refined 4x3 alignment to match image */}
+                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '10px' }}>
+                   {[
+                     ['Date', new Date(qualityModalEntry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })],
+                     ['Bags', qualityModalEntry.bags?.toLocaleString('en-IN')],
+                     ['Packaging', `${qualityModalEntry.packaging || '75'} Kg`],
+                     ['Variety', toTitleCase(qualityModalEntry.variety || '-')],
+                   ].map(([label, value], i) => (
+                     <div key={`basic-top-${i}`} style={{ background: '#f8fafc', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                       <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '3px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+                       <div style={{ fontSize: '13px', fontWeight: '700', color: '#1e293b' }}>{value || '-'}</div>
+                     </div>
+                   ))}
+                 </div>
+                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '20px' }}>
+                   {[
+                     ['Party Name', toTitleCase(qualityModalEntry.partyName) || '-'],
+                     ['Paddy Location', toTitleCase(qualityModalEntry.location || '-')],
+                   ].map(([label, value], i) => (
+                     <div key={`basic-mid-${i}`} style={{ background: '#f8fafc', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                       <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '3px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+                       <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value || '-'}</div>
+                     </div>
+                   ))}
+                   <div style={{ background: '#f8fafc', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                     <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '3px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sample Collected By</div>
+                     {(() => {
+                       const col = getCollectedByDisplay(qualityModalEntry);
+                       return (
+                         <div style={{ fontSize: '14px', fontWeight: '800', color: col.highlightPrimary ? '#7e22ce' : '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                           {col.primary}
+                         </div>
+                       );
+                     })()}
+                   </div>
+                 </div>
                 {/* Quality Parameters */}
                 <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px' }}>🔬 Quality Parameters</h4>
                 {qpAll.length === 0 ? (
                   <div style={{ color: '#999', textAlign: 'center', padding: '12px', fontSize: '12px' }}>No quality data</div>
                 ) : useAttemptComparisonLayout ? (() => {
-                  const buildAttemptRows = (qp: any) => {
+                   const buildAttemptRows = (qp: QualityAttemptDetail) => {
                     const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
                     const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
                     const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
                     const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
-                    const smellHasVal = qp.smellHas ?? (qualityModalEntry as any).smellHas;
-                    const smellTypeVal = qp.smellType ?? (qualityModalEntry as any).smellType;
+                    const smellHasVal = qp.smellHas ?? qualityModalEntry.qualityParameters?.smellHas;
+                    const smellTypeVal = qp.smellType ?? qualityModalEntry.qualityParameters?.smellType;
+                    
+                    const firstCollectorName = qualityModalEntry.sampleCollectedHistory && qualityModalEntry.sampleCollectedHistory.length > 0 
+                      ? qualityModalEntry.sampleCollectedHistory[0] 
+                      : (qualityModalEntry.sampleCollectedBy || '-');
+                    
                     return [
                       [
-                        { label: 'Sample Collected By', value: toTitleCase(qp.sampleCollectedBy || qualityModalEntry.sampleCollectedBy || '-'), span: 2 },
-                        { label: 'Sample Reported By', value: toTitleCase(qp.reportedBy || '-'), span: 2 },
-                        { label: 'Reported At', value: qp.updatedAt || qp.createdAt ? new Date(qp.updatedAt || qp.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-', span: 2 },
-                        { label: 'Moisture', value: (() => { const val = displayVal(qp.moistureRaw, qp.moisture); return val ? `${val}%` : '-'; })() },
-                        { label: 'Cutting', value: (() => { const cut1 = displayVal(qp.cutting1Raw, qp.cutting1); const cut2 = displayVal(qp.cutting2Raw, qp.cutting2); return cut1 && cut2 ? `${cut1}x${cut2}` : '-'; })() },
-                        { label: 'Bend', value: (() => { const bend1 = displayVal(qp.bend1Raw, qp.bend1); const bend2 = displayVal(qp.bend2Raw, qp.bend2); return bend1 && bend2 ? `${bend1}x${bend2}` : '-'; })() }
+                        { label: 'Sample Collected By', value: toTitleCase(getCollectorLabel(firstCollectorName)), span: 3 },
+                        { label: 'Sample Reported By', value: toTitleCase(qp.reportedBy || '-'), span: 3 },
+                        { label: 'Reported At', value: qp.updatedAt || qp.createdAt ? new Date(qp.updatedAt || qp.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-', span: 3 },
                       ],
                       [
-                        { label: 'Grains Count', value: (() => { const val = displayVal(qp.grainsCountRaw, qp.grainsCount); return val ? `(${val})` : '-'; })() },
-                        { label: 'Mix', value: displayVal(qp.mixRaw, qp.mix) || '-' },
-                        { label: 'S Mix', value: displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-' },
-                        { label: 'L Mix', value: displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-' },
-                        { label: 'Kandu', value: displayVal(qp.kanduRaw, qp.kandu) || '-' }
+                        { label: 'Moisture', value: (() => { const val = displayVal((qp as any).moistureRaw, (qp as any).moisture); return val ? `${val}%` : '-'; })() },
+                        { label: 'Cutting', value: (() => { const cut1 = displayVal((qp as any).cutting1Raw, (qp as any).cutting1); const cut2 = displayVal((qp as any).cutting2Raw, (qp as any).cutting2); return cut1 && cut2 ? `${cut1}x${cut2}` : '-'; })() },
+                        { label: 'Bend', value: (() => { const b1 = displayVal((qp as any).bend1Raw, (qp as any).bend1); const b2 = displayVal((qp as any).bend2Raw, (qp as any).bend2); return b1 && b2 ? `${b1}x${b2}` : '-'; })() }
                       ],
                       [
-                        { label: 'Oil', value: displayVal(qp.oilRaw, qp.oil) || '-' },
-                        { label: 'SK', value: displayVal(qp.skRaw, qp.sk) || '-' },
-                        { label: 'WB-R', value: displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-' },
-                        { label: 'WB-BK', value: displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-' },
-                        { label: 'WB-T', value: displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-' }
+                        { label: 'Grains Count', value: (() => { const val = displayVal((qp as any).grainsCountRaw, (qp as any).grainsCount); return val ? `(${val})` : '-'; })() },
+                        { label: 'Mix', value: displayVal((qp as any).mixRaw, (qp as any).mix) || '-' },
+                        { label: 'S Mix', value: displayVal((qp as any).mixSRaw, (qp as any).mixS, smixOn) || '-' },
+                        { label: 'L Mix', value: displayVal((qp as any).mixLRaw, (qp as any).mixL, lmixOn) || '-' },
+                        { label: 'Kandu', value: displayVal((qp as any).kanduRaw, (qp as any).kandu) || '-' }
                       ],
                       [
-                        { label: 'Paddy WB', value: displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-', span: 5 }
+                        { label: 'Oil', value: displayVal((qp as any).oilRaw, (qp as any).oil) || '-' },
+                        { label: 'SK', value: displayVal((qp as any).skRaw, (qp as any).sk) || '-' },
+                        { label: 'WB-R', value: displayVal((qp as any).wbRRaw, (qp as any).wbR, wbOn) || '-' },
+                        { label: 'WB-BK', value: displayVal((qp as any).wbBkRaw, (qp as any).wbBk, wbOn) || '-' },
+                        { label: 'WB-T', value: displayVal((qp as any).wbTRaw, (qp as any).wbT, wbOn) || '-' }
+                      ],
+                      [
+                        { label: 'Paddy WB', value: displayVal((qp as any).paddyWbRaw, (qp as any).paddyWb, paddyOn) || '-', span: 5 }
                       ].filter((item) => item.value && item.value !== '-'),
                       [
                         { label: 'Smell', value: (smellHasVal || (smellTypeVal && String(smellTypeVal).trim())) ? toTitleCase(smellTypeVal || 'Yes') : '-' }
                       ].filter((item) => item.value && item.value !== '-')
-                    ];
+                    ] as any;
                   };
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -1719,8 +1770,8 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                             {buildAttemptRows(qp).map((row, rowIdx) => (
                               row.length > 0 ? (
                                 <div key={`${qp.attemptNo || idx}-row-${rowIdx}`} style={{ display: 'grid', gridTemplateColumns: rowIdx === 0 ? 'repeat(9, minmax(0, 1fr))' : `repeat(${row.length}, minmax(0, 1fr))`, gap: '12px' }}>
-                                  {row.map((item, cardIdx) => (
-                                    <div key={`${qp.attemptNo || idx}-${item.label}-${cardIdx}`} style={{ gridColumn: rowIdx === 0 ? `span ${item.span || 1}` : undefined }}>
+                                  {row.map((item: any, cardIdx: number) => (
+                                    <div key={`${qp.attemptNo || idx}-${item.label}-${cardIdx}`} style={{ gridColumn: rowIdx === 0 ? `span ${(item as any).span || 1}` : undefined }}>
                                       <QItem label={item.label} value={item.value} />
                                     </div>
                                   ))}
@@ -1733,86 +1784,49 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                     </div>
                   );
                 })() : (() => {
-                  // Single attempt — vertical card grid (matches right side of user's image)
+                  // Single attempt — premium vertical card grid as per image
+                  const qp = qpAll[0] as QualityAttemptDetail;
+                  const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
+                  const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
+                  const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
+                  const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
+                  const smellHasVal = qp.smellHas ?? qualityModalEntry.qualityParameters?.smellHas;
+                  const smellTypeVal = qp.smellType ?? qualityModalEntry.qualityParameters?.smellType;
+
                   return (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      {qpAll.map((qp: any, idx: number) => {
-                        const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
-                        const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
-                        const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
-                        const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
-
-                        const row1: { label: string; value: React.ReactNode }[] = [];
-                        const moistureVal = displayVal(qp.moistureRaw, qp.moisture);
-                        if (moistureVal) row1.push({ label: 'Moisture', value: `${moistureVal}%` });
-                        const cut1 = displayVal(qp.cutting1Raw, qp.cutting1);
-                        const cut2 = displayVal(qp.cutting2Raw, qp.cutting2);
-                        if (cut1 && cut2) row1.push({ label: 'Cutting', value: `${cut1}x${cut2}` });
-                        const bend1 = displayVal(qp.bend1Raw, qp.bend1);
-                        const bend2 = displayVal(qp.bend2Raw, qp.bend2);
-                        if (bend1 && bend2) row1.push({ label: 'Bend', value: `${bend1}x${bend2}` });
-                        const grainsVal = displayVal(qp.grainsCountRaw, qp.grainsCount);
-                        if (grainsVal) row1.push({ label: 'Grains Count', value: `(${grainsVal})` });
-
-                        const row2: { label: string; value: React.ReactNode }[] = [];
-                        const mixVal = displayVal(qp.mixRaw, qp.mix);
-                        const mixSVal = displayVal(qp.mixSRaw, qp.mixS, smixOn);
-                        const mixLVal = displayVal(qp.mixLRaw, qp.mixL, lmixOn);
-                        if (mixVal) row2.push({ label: 'Mix', value: mixVal });
-                        if (mixSVal) row2.push({ label: 'S Mix', value: mixSVal });
-                        if (mixLVal) row2.push({ label: 'L Mix', value: mixLVal });
-
-                        const row3: { label: string; value: React.ReactNode }[] = [];
-                        const kanduVal = displayVal(qp.kanduRaw, qp.kandu);
-                        const oilVal = displayVal(qp.oilRaw, qp.oil);
-                        const skVal = displayVal(qp.skRaw, qp.sk);
-                        if (kanduVal) row3.push({ label: 'Kandu', value: kanduVal });
-                        if (oilVal) row3.push({ label: 'Oil', value: oilVal });
-                        if (skVal) row3.push({ label: 'SK', value: skVal });
-
-                        const row4: { label: string; value: React.ReactNode }[] = [];
-                        const row5: { label: string; value: React.ReactNode }[] = [];
-                        const wbRVal = displayVal(qp.wbRRaw, qp.wbR, wbOn);
-                        const wbBkVal = displayVal(qp.wbBkRaw, qp.wbBk, wbOn);
-                        const wbTVal = displayVal(qp.wbTRaw, qp.wbT, wbOn);
-                        if (wbRVal) row4.push({ label: 'WB-R', value: wbRVal });
-                        if (wbBkVal) row4.push({ label: 'WB-BK', value: wbBkVal });
-                        if (wbTVal) row4.push({ label: 'WB-T', value: wbTVal });
-                        const hasPaddyWb = displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn);
-                        if (hasPaddyWb) {
-                          row5.push({
-                            label: 'Paddy WB',
-                            value: (
-                              <span style={{
-                                color: Number(qp.paddyWb) < 50 ? '#d32f2f' : (Number(qp.paddyWb) <= 50.5 ? '#f39c12' : '#1b5e20'),
-                                fontWeight: '800'
-                              }}>
-                                {hasPaddyWb}
-                              </span>
-                            )
-                          });
-                        }
-                        const smellHasVal = qp.smellHas ?? (qualityModalEntry as any).smellHas;
-                        const smellTypeVal = qp.smellType ?? (qualityModalEntry as any).smellType;
-                        if (smellHasVal || (smellTypeVal && String(smellTypeVal).trim())) row5.push({ label: 'Smell', value: toTitleCase(smellTypeVal || 'Yes') });
-
-                        return (
-                          <div key={idx}>
-                            {row1.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row1.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row1.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                            {row2.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row2.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row2.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                            {row3.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row3.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row3.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                            {row4.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row4.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row4.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                            {row5.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row5.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row5.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
-                            {qp.reportedBy && (
-                              <div style={{ marginTop: '8px', borderTop: '1px dashed #e2e8f0', paddingTop: '6px' }}>
-                                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600', textAlign: 'center' }}>
-                                  Reported By: <span style={{ color: '#1e293b', fontWeight: '800', fontSize: '13px' }}>{toTitleCase(qp.reportedBy)}</span>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+                        <QItem label="Moisture" value={displayVal((qp as any).moistureRaw, (qp as any).moisture) ? `${displayVal((qp as any).moistureRaw, (qp as any).moisture)}%` : '-'} />
+                        <QItem label="Cutting" value={(() => { const c1 = displayVal((qp as any).cutting1Raw, (qp as any).cutting1); const c2 = displayVal((qp as any).cutting2Raw, (qp as any).cutting2); return c1 && c2 ? `${c1}×${c2}` : '-'; })()} />
+                        <QItem label="Bend" value={(() => { const b1 = displayVal((qp as any).bend1Raw, (qp as any).bend1); const b2 = displayVal((qp as any).bend2Raw, (qp as any).bend2); return b1 && b2 ? `${b1}×${b2}` : '-'; })()} />
+                        <QItem label="Grains Count" value={displayVal((qp as any).grainsCountRaw, (qp as any).grainsCount) ? `(${displayVal((qp as any).grainsCountRaw, (qp as any).grainsCount)})` : '-'} />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                        <QItem label="Mix" value={displayVal((qp as any).mixRaw, (qp as any).mix) || '-'} />
+                        <QItem label="S Mix" value={displayVal((qp as any).mixSRaw, (qp as any).mixS, smixOn) || '-'} />
+                        <QItem label="L Mix" value={displayVal((qp as any).mixLRaw, (qp as any).mixL, lmixOn) || '-'} />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                        <QItem label="Kandu" value={displayVal((qp as any).kanduRaw, (qp as any).kandu) || '-'} />
+                        <QItem label="Oil" value={displayVal((qp as any).oilRaw, (qp as any).oil) || '-'} />
+                        <QItem label="SK" value={displayVal((qp as any).skRaw, (qp as any).sk) || '-'} />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                        <QItem label="WB-R" value={displayVal((qp as any).wbRRaw, (qp as any).wbR, wbOn) || '-'} />
+                        <QItem label="WB-BK" value={displayVal((qp as any).wbBkRaw, (qp as any).wbBk, wbOn) || '-'} />
+                        <QItem label="WB-T" value={displayVal((qp as any).wbTRaw, (qp as any).wbT, wbOn) || '-'} />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'center' }}>
+                         <div style={{ width: 'min(240px, 100%)' }}>
+                            <QItem label="Paddy WB" value={displayVal((qp as any).paddyWbRaw, (qp as any).paddyWb, paddyOn) || '-'} />
+                         </div>
+                      </div>
+                      {(qp as any).reportedBy && (
+                        <div style={{ marginTop: '14px', background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
+                          <div style={{ fontSize: '10px', color: '#64748b', fontWeight: '700', textTransform: 'uppercase', marginBottom: '4px' }}>Sample Reported By</div>
+                          <div style={{ fontSize: '16px', color: '#0f172a', fontWeight: '800' }}>{toTitleCase((qp as any).reportedBy)}</div>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}

@@ -489,7 +489,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
   const [approvalType, setApprovalType] = useState<'owner' | 'manager' | 'admin' | 'manual'>('owner');
   const [manualApprovalName, setManualApprovalName] = useState('');
   const [manualDate, setManualDate] = useState(new Date().toISOString().split('T')[0]);
-  const isCookingStaffRole = user?.role === 'staff' || user?.role === 'quality_supervisor' || forceStaffMode;
+  const isCookingStaffRole = (['staff', 'quality_supervisor', 'paddy_supervisor'].includes(String(user?.role || '').toLowerCase())) || forceStaffMode;
 
   const resetReportFormState = () => {
     setCookingData(createEmptyCookingData());
@@ -700,8 +700,15 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
   const handleOpenModal = (entry: SampleEntry) => {
     setSelectedEntry(entry);
     setShowModal(true);
-    // Always start with a clean form for a new report action.
     resetReportFormState();
+
+    // Auto-select current supervisor if it's a resample case
+    if (isCookingStaffRole && isResampleWorkflowEntry(entry)) {
+      const currentUserName = user?.username || '';
+      if (currentUserName) {
+        setCookingData(prev => ({ ...prev, cookingDoneBy: currentUserName }));
+      }
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1142,11 +1149,16 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
 
     if (isResampleCase) {
       const assignedUser = String(entry.sampleCollectedBy || '').trim().toLowerCase();
+      // If not allotted yet, block.
       if (!assignedUser) return { canAdd: false, reason: 'Awaiting Assign' };
+
       const currentUser = String(user?.username || '').trim().toLowerCase();
-      if (currentUser && assignedUser !== currentUser) {
+      
+      // If current user is a staff/supervisor but NOT the assigned one, block.
+      if (isCookingStaffRole && currentUser && assignedUser !== currentUser) {
         return { canAdd: false, reason: `Assigned to ${getCollectorLabel(entry.sampleCollectedBy || '-', supervisors)}` };
       }
+
       if (!hasCurrentCycleQualityData(entry)) {
         return { canAdd: false, reason: 'Awaiting Quality' };
       }
@@ -1970,9 +1982,10 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                             onChange={(e) => {
                               setCookingData({ ...cookingData, cookingDoneBy: e.target.value });
                             }}
+                            disabled={isCookingStaffRole && isResampleWorkflowEntry(selectedEntry)}
                             style={{
                               width: '100%', padding: '6px 8px', border: '1px solid #999', borderRadius: '3px', fontSize: '13px',
-                              backgroundColor: 'white', marginBottom: '6px'
+                              backgroundColor: isCookingStaffRole && isResampleWorkflowEntry(selectedEntry) ? '#f5f5f5' : 'white', marginBottom: '6px'
                             }}
                           >
                             <option value="">-- Select from list --</option>
