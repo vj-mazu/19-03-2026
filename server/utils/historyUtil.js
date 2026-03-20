@@ -33,6 +33,41 @@ const hasQualityData = (qp) => {
     || isProvidedAlpha(qp.mixLRaw, qp.mixL);
   return moisture && (grains || cutting || bend || mix);
 };
+const normalizeAttemptValue = (value) => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  return String(value);
+};
+const areQualityAttemptsEquivalent = (left, right) => {
+  const keys = [
+    'reportedBy',
+    'moistureRaw', 'moisture',
+    'dryMoistureRaw', 'dryMoisture',
+    'cutting1Raw', 'cutting1', 'cutting2Raw', 'cutting2',
+    'bend1Raw', 'bend1', 'bend2Raw', 'bend2',
+    'grainsCountRaw', 'grainsCount',
+    'mixRaw', 'mix', 'mixSRaw', 'mixS', 'mixLRaw', 'mixL',
+    'kanduRaw', 'kandu', 'oilRaw', 'oil', 'skRaw', 'sk',
+    'wbRRaw', 'wbR', 'wbBkRaw', 'wbBk', 'wbTRaw', 'wbT',
+    'paddyWbRaw', 'paddyWb',
+    'gramsReport', 'smellHas', 'smellType'
+  ];
+  return keys.every((key) => normalizeAttemptValue(left?.[key]) === normalizeAttemptValue(right?.[key]));
+};
+
+const dedupeQualityAttempts = (attempts = []) => {
+  const deduped = [];
+  attempts.forEach((attempt) => {
+    if (!attempt) return;
+    const existingIndex = deduped.findIndex((item) => areQualityAttemptsEquivalent(item, attempt));
+    if (existingIndex >= 0) {
+      deduped[existingIndex] = { ...deduped[existingIndex], ...attempt };
+      return;
+    }
+    deduped.push(attempt);
+  });
+  return deduped;
+};
 
 const hasCookingData = (cr) => {
   if (!cr) return false;
@@ -81,6 +116,22 @@ const attachLoadingLotsHistories = async (rows) => {
     if (!value) return 0;
     const time = new Date(value).getTime();
     return Number.isFinite(time) ? time : 0;
+  };
+  const getTimelineEntryForTime = (list, valueTime) => {
+    if (!Array.isArray(list) || list.length === 0) return null;
+    const entries = list.filter((item) => item && typeof item.name === 'string' && item.name.trim() !== '');
+    if (entries.length === 0) return null;
+    const targetTime = toTime(valueTime);
+    const fallback = entries[entries.length - 1];
+    if (!targetTime) return fallback;
+    let matched = null;
+    entries.forEach((item) => {
+      const itemTime = toTime(item.date);
+      if (!item.date || itemTime <= targetTime) {
+        matched = item;
+      }
+    });
+    return matched || fallback;
   };
   
   const buildQualityAttemptDetail = (source, fallbackCreatedAt) => {
@@ -240,16 +291,39 @@ const attachLoadingLotsHistories = async (rows) => {
       target.recheckPreviousDecision = null;
     }
     
+    const failLog = sampleEntryAuditLogs.find((log) => {
+      const nv = normalizeAuditMetadata(log.newValues) || {};
+      return String(nv.lotSelectionDecision || '').toUpperCase() === 'FAIL';
+    });
+    const hasResampleFlow = Boolean(failLog) || String(row?.lotSelectionDecision || '').toUpperCase() === 'FAIL';
+
     // Extract sampleCollectedBy history
     const sampleCollectedHistory = [];
     const sampleCollectedTimeline = [];
+    const resampleCollectedHistory = [];
+    const resampleCollectedTimeline = [];
+    let resampleCollectionActive = false;
     sampleEntryAuditLogs.forEach((log) => {
+      const newValues = normalizeAuditMetadata(log.newValues) || {};
+      const metadata = normalizeAuditMetadata(log.metadata) || {};
+      if (
+        String(newValues.lotSelectionDecision || '').toUpperCase() === 'FAIL'
+        || metadata.resample === true
+        || metadata.resampleAfterFinal === true
+      ) {
+        resampleCollectionActive = true;
+      }
+
       if (log.actionType !== 'WORKFLOW_TRANSITION') {
-        const sampleCollectedBy = typeof log.newValues?.sampleCollectedBy === 'string'
-          ? log.newValues.sampleCollectedBy.trim()
+        const sampleCollectedBy = typeof newValues?.sampleCollectedBy === 'string'
+          ? newValues.sampleCollectedBy.trim()
           : '';
         pushHistoryValue(sampleCollectedHistory, sampleCollectedBy);
         pushTimelineEntry(sampleCollectedTimeline, sampleCollectedBy, log.createdAt || null);
+        if (resampleCollectionActive) {
+          pushHistoryValue(resampleCollectedHistory, sampleCollectedBy);
+          pushTimelineEntry(resampleCollectedTimeline, sampleCollectedBy, log.createdAt || null);
+        }
       }
     });
 
@@ -259,15 +333,26 @@ const attachLoadingLotsHistories = async (rows) => {
 
     if (currentSampleCollectedBy) {
       pushHistoryValue(sampleCollectedHistory, currentSampleCollectedBy);
-    pushTimelineEntry(
+      pushTimelineEntry(
         sampleCollectedTimeline,
         currentSampleCollectedBy,
         row?.updatedAt || row?.lotSelectionAt || row?.createdAt || null
       );
+      const isBrokerOfficeSample = currentSampleCollectedBy.toLowerCase() === 'broker office sample';
+      if (hasResampleFlow && !isBrokerOfficeSample) {
+        pushHistoryValue(resampleCollectedHistory, currentSampleCollectedBy);
+        pushTimelineEntry(
+          resampleCollectedTimeline,
+          currentSampleCollectedBy,
+          row?.updatedAt || row?.lotSelectionAt || row?.createdAt || null
+        );
+      }
     }
 
     target.sampleCollectedHistory = sampleCollectedHistory;
     target.sampleCollectedTimeline = sampleCollectedTimeline;
+    target.resampleCollectedHistory = resampleCollectedHistory;
+    target.resampleCollectedTimeline = resampleCollectedTimeline;
 
     const qualityId = row?.qualityParameters?.id;
     if (!qualityId) {
@@ -299,21 +384,22 @@ const attachLoadingLotsHistories = async (rows) => {
     target.qualityReportHistory = history;
 
     // --- Refined Quality Attempt Grouping Logic ---
-    // Boundaries are transitions TO 'QUALITY_CHECK'
+    // Boundaries are transitions TO 'QUALITY_CHECK' OR transitions TO 'LOT_SELECTION' with resampleQualitySaved metadata
     const transitionLogs = sampleEntryAuditLogs.filter(l => {
       if (l.actionType !== 'WORKFLOW_TRANSITION') return false;
       const nv = normalizeAuditMetadata(l.newValues) || {};
-      return nv.workflowStatus === 'QUALITY_CHECK';
+      const metadata = normalizeAuditMetadata(l.metadata) || {};
+      // Include transitions to QUALITY_CHECK (recheck/resample assignment)
+      if (nv.workflowStatus === 'QUALITY_CHECK') return true;
+      // Include transitions to LOT_SELECTION with resampleQualitySaved flag (resample quality saved)
+      if (nv.workflowStatus === 'LOT_SELECTION' && metadata.resampleQualitySaved === true) return true;
+      return false;
     });
     
     const qualityAttemptDetails = [];
     
     // Find the original FAIL decision time to mark the start of resample flow.
     // If the lot was failed, there will be an audit log setting lotSelectionDecision to 'FAIL'
-    const failLog = sampleEntryAuditLogs.find(l => {
-      const nv = normalizeAuditMetadata(l.newValues) || {};
-      return String(nv.lotSelectionDecision || '').toUpperCase() === 'FAIL';
-    });
     const resampleStartTime = failLog ? toTime(failLog.createdAt) : 0;
     target.resampleStartAt = failLog?.createdAt || null;
     
@@ -365,37 +451,29 @@ const attachLoadingLotsHistories = async (rows) => {
         }
       });
       
-      // Always include current state as the latest attempt
+      // Merge current state carefully:
+      // - if it matches an existing attempt, merge into that attempt
+      // - otherwise treat it as an edit to the latest real attempt
+      // The workflow transitions already define new attempt boundaries, so we
+      // should not create an extra attempt here from the current snapshot.
       const currentDetail = buildQualityAttemptDetail(row.qualityParameters, row.qualityParameters?.updatedAt || row.qualityParameters?.createdAt);
       if (currentDetail) {
-        const currentTime = toTime(row.qualityParameters.updatedAt || row.qualityParameters.createdAt);
-        const currentAttemptIdx = getAttemptIndexForTime(currentTime);
-        const hasExistingResampleAttempt = resampleStartTime > 0
-          && qualityAttemptDetails.some((item) => new Date(item.createdAt).getTime() >= resampleStartTime);
-        const shouldForceResampleAttempt = resampleStartTime > 0
-          && currentTime >= resampleStartTime
-          && !hasExistingResampleAttempt;
-        
-        // Find if we already have a record matching this specific bucket
-        // If not, it's a new sequential attempt.
-        const existingIdx = qualityAttemptDetails.findIndex((item) => {
-          // Check if this item was built from logs that fall into the same bucket as the current data
-          const itemTime = toTime(item.createdAt);
-          return getAttemptIndexForTime(itemTime) === currentAttemptIdx;
-        });
-
-        if (shouldForceResampleAttempt) {
-          qualityAttemptDetails.push({ attemptNo: seqAttemptNo++, ...currentDetail });
-        } else if (existingIdx >= 0) {
-          // Update the existing sequential attempt with the most recent live data
+        const existingIdx = qualityAttemptDetails.findIndex((item) => areQualityAttemptsEquivalent(item, currentDetail));
+        if (existingIdx >= 0) {
           qualityAttemptDetails[existingIdx] = { ...qualityAttemptDetails[existingIdx], ...currentDetail };
+        } else if (qualityAttemptDetails.length > 0) {
+          const lastIdx = qualityAttemptDetails.length - 1;
+          qualityAttemptDetails[lastIdx] = { ...qualityAttemptDetails[lastIdx], ...currentDetail };
         } else {
-          // Add as a new sequential attempt
           qualityAttemptDetails.push({ attemptNo: seqAttemptNo++, ...currentDetail });
         }
       }
 
-      qualityAttemptDetails.sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0));
+      const dedupedAttempts = dedupeQualityAttempts(
+        qualityAttemptDetails.sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0))
+      );
+      qualityAttemptDetails.length = 0;
+      dedupedAttempts.forEach((attempt) => qualityAttemptDetails.push(attempt));
     } else {
       // Fallback if no transition logs (should not happen in normal workflow)
       const fallbackDetail = buildQualityAttemptDetail(row.qualityParameters, row.createdAt);
@@ -404,52 +482,15 @@ const attachLoadingLotsHistories = async (rows) => {
       }
     }
 
-    if (resampleStartTime > 0 && row?.qualityParameters) {
-      const currentQualityTime = toTime(row.qualityParameters.updatedAt || row.qualityParameters.createdAt || 0);
-      const hasCurrentResampleAttempt = qualityAttemptDetails.some((item) => toTime(item.createdAt) >= resampleStartTime);
-
-      if (currentQualityTime >= resampleStartTime && !hasCurrentResampleAttempt) {
-        const currentDetail = buildQualityAttemptDetail(row.qualityParameters, row.qualityParameters?.updatedAt || row.qualityParameters?.createdAt);
-        if (currentDetail) {
-          qualityAttemptDetails.push({ attemptNo: qualityAttemptDetails.length + 1, ...currentDetail });
-        }
-      }
-
-      let previousDetail = null;
-      for (let idx = auditLogs.length - 1; idx >= 0; idx -= 1) {
-        const log = auditLogs[idx];
-        const logTime = toTime(log.createdAt);
-        if (logTime >= resampleStartTime) continue;
-        const detail = buildQualityAttemptDetail(log.newValues, log.createdAt);
-        if (detail) {
-          previousDetail = detail;
-          break;
-        }
-      }
-
-      const hasPreResampleAttempt = qualityAttemptDetails.some((item) => toTime(item.createdAt) < resampleStartTime);
-      if (!hasPreResampleAttempt) {
-        if (previousDetail) {
-          qualityAttemptDetails.unshift({ attemptNo: 1, ...previousDetail });
-          qualityAttemptDetails.forEach((item, index) => {
-            item.attemptNo = index + 1;
-          });
-        }
-      }
-
-      if (currentQualityTime >= resampleStartTime && previousDetail) {
-        const currentDetail = buildQualityAttemptDetail(row.qualityParameters, row.qualityParameters?.updatedAt || row.qualityParameters?.createdAt);
-        const rebuiltAttempts = [];
-        rebuiltAttempts.push({ attemptNo: 1, ...previousDetail });
-        if (currentDetail) {
-          rebuiltAttempts.push({ attemptNo: 2, ...currentDetail });
-        }
-        if (rebuiltAttempts.length >= 2) {
-          qualityAttemptDetails.length = 0;
-          rebuiltAttempts.forEach((item) => qualityAttemptDetails.push(item));
-        }
-      }
-    }
+    qualityAttemptDetails.forEach((item, index) => {
+      item.attemptNo = index + 1;
+      const timeline = hasResampleFlow
+        ? (resampleCollectedTimeline.length > 0 ? resampleCollectedTimeline : [])
+        : sampleCollectedTimeline;
+      const matchedCollector = getTimelineEntryForTime(timeline, item.createdAt);
+      item.sampleCollectedBy = matchedCollector?.name || currentSampleCollectedBy || '';
+      item.lotSelectionAt = matchedCollector?.date || row?.lotSelectionAt || null;
+    });
 
     target.qualityReportAttempts = qualityAttemptDetails.length;
     target.qualityAttemptDetails = qualityAttemptDetails;

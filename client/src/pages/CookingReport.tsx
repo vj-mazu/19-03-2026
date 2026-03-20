@@ -70,8 +70,16 @@ const getCreatorLabel = (entry: SampleEntry) => {
 };
 const getCollectedByDisplay = (entry: SampleEntry, supervisors: SupervisorUser[]) => {
   const creatorLabel = getCreatorLabel(entry);
-  const collectorLabel = getCollectorLabel(entry.sampleCollectedBy || null, supervisors);
-  const isGivenToOffice = Boolean((entry as any)?.sampleGivenToOffice);
+  const fallbackCollector = [
+    entry.sampleCollectedBy,
+    ...(((entry as any)?.resampleCollectedHistory || []) as string[]),
+    ...(((entry as any)?.sampleCollectedHistory || []) as string[])
+  ].find((value) => typeof value === 'string' && value.trim() !== '');
+  const collectorLabel = getCollectorLabel(fallbackCollector || null, supervisors);
+  const isResample = String((entry as any)?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
+    || Number((entry as any)?.qualityReportAttempts || 0) > 1
+    || (Array.isArray((entry as any)?.resampleCollectedHistory) && (entry as any).resampleCollectedHistory.length > 0);
+  const isGivenToOffice = Boolean((entry as any)?.sampleGivenToOffice) || isResample;
 
   if (isGivenToOffice) {
     const primary = creatorLabel !== '-' ? creatorLabel : collectorLabel;
@@ -217,33 +225,132 @@ const isResampleWorkflowEntry = (entry: any) => {
     || Number(entry?.qualityReportAttempts || 0) > 1;
 };
 const getQualityAttemptsForEntry = (entry: any) => {
+  const getAttemptFingerprint = (attempt: any) => ([
+    attempt?.reportedBy ?? '',
+    attempt?.moistureRaw ?? attempt?.moisture ?? '',
+    attempt?.grainsCountRaw ?? attempt?.grainsCount ?? '',
+    attempt?.cutting1Raw ?? attempt?.cutting1 ?? '',
+    attempt?.cutting2Raw ?? attempt?.cutting2 ?? '',
+    attempt?.bend1Raw ?? attempt?.bend1 ?? '',
+    attempt?.bend2Raw ?? attempt?.bend2 ?? '',
+    attempt?.mixRaw ?? attempt?.mix ?? '',
+    attempt?.mixSRaw ?? attempt?.mixS ?? '',
+    attempt?.mixLRaw ?? attempt?.mixL ?? '',
+    attempt?.kanduRaw ?? attempt?.kandu ?? '',
+    attempt?.oilRaw ?? attempt?.oil ?? '',
+    attempt?.skRaw ?? attempt?.sk ?? '',
+    attempt?.wbRRaw ?? attempt?.wbR ?? '',
+    attempt?.wbBkRaw ?? attempt?.wbBk ?? '',
+    attempt?.wbTRaw ?? attempt?.wbT ?? '',
+    attempt?.paddyWbRaw ?? attempt?.paddyWb ?? '',
+    attempt?.smellHas ?? '',
+    attempt?.smellType ?? ''
+  ].map((value) => String(value ?? '').trim()).join('|'));
+
   const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
     ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
     : [];
+  const normalizedBaseAttempts = baseAttempts.reduce((acc: any[], attempt: any) => {
+    const previous = acc[acc.length - 1];
+    if (!previous) {
+      acc.push(attempt);
+      return acc;
+    }
+
+    const sameAttemptNo = Number(previous?.attemptNo || 0) === Number(attempt?.attemptNo || 0);
+    const sameFingerprint = getAttemptFingerprint(previous) === getAttemptFingerprint(attempt);
+
+    if (sameAttemptNo && sameFingerprint) {
+      acc[acc.length - 1] = { ...previous, ...attempt };
+      return acc;
+    }
+
+    acc.push(attempt);
+    return acc;
+  }, []);
   const currentQuality = entry?.qualityParameters;
 
-  if (!currentQuality) return baseAttempts;
-  if (baseAttempts.length === 0) return hasQualitySnapshot(currentQuality) ? [currentQuality] : [];
+  if (normalizedBaseAttempts.length > 0) {
+    return normalizedBaseAttempts.map((attempt: any, index: number) => ({
+      ...attempt,
+      attemptNo: Number(attempt?.attemptNo) || index + 1
+    }));
+  }
 
-  const isResampleFlow = isResampleWorkflowEntry(entry);
-  const currentAlreadyIncluded = baseAttempts.some((a: any) =>
-    (a.id && currentQuality.id && String(a.id) === String(currentQuality.id))
-    || areQualityAttemptsEquivalent(a, currentQuality)
-  );
-  const shouldAppendCurrentQuality =
-    hasQualitySnapshot(currentQuality) &&
-    isResampleFlow &&
-    !currentAlreadyIncluded;
+  if (!currentQuality || !hasQualitySnapshot(currentQuality)) return [];
+  return [{ ...currentQuality, attemptNo: 1 }];
+};
+const buildCookingStatusRows = (entry: any) => {
+  const cr = entry?.cookingReport;
+  const normalizeCookingStatus = (status?: string | null) => {
+    const normalized = String(status || '').trim().toUpperCase();
+    if (normalized === 'PASS' || normalized === 'OK') return 'Pass';
+    if (normalized === 'MEDIUM') return 'Medium';
+    if (normalized === 'FAIL') return 'Fail';
+    if (normalized === 'RECHECK') return 'Recheck';
+    if (normalized === 'PENDING') return 'Pending';
+    return normalized ? toTitleCase(normalized.toLowerCase()) : 'Pending';
+  };
+  const toTs = (value: any) => {
+    if (!value) return 0;
+    const ts = new Date(value).getTime();
+    return Number.isFinite(ts) ? ts : 0;
+  };
+  const historyRaw = Array.isArray(cr?.history) ? cr.history : [];
+  const history = [...historyRaw].sort((a: any, b: any) => toTs(a?.date || a?.updatedAt || a?.createdAt || '') - toTs(b?.date || b?.updatedAt || b?.createdAt || ''));
+  const rows: any[] = [];
+  let pendingDone: any = null;
 
-  if (!shouldAppendCurrentQuality) return baseAttempts;
+  history.forEach((item: any) => {
+    const hasStatus = !!item?.status;
+    const doneByValue = String(item?.cookingDoneBy || '').trim();
+    const doneDateValue = item?.doneDate || item?.cookingDoneAt || item?.submittedAt || item?.date || null;
 
-  return [
-    ...baseAttempts,
-    {
-      ...currentQuality,
-      attemptNo: Math.max(...baseAttempts.map((attempt: any) => Number(attempt.attemptNo) || 0), 1) + 1
+    if (!hasStatus && doneByValue) {
+      pendingDone = {
+        doneBy: doneByValue,
+        doneDate: doneDateValue,
+        remarks: String(item?.remarks || '').trim()
+      };
+      return;
     }
-  ];
+
+    if (hasStatus) {
+      rows.push({
+        status: normalizeCookingStatus(item.status),
+        doneBy: pendingDone?.doneBy || doneByValue || String(cr?.cookingDoneBy || '').trim(),
+        doneDate: pendingDone?.doneDate || doneDateValue,
+        approvedBy: String(item?.approvedBy || item?.cookingApprovedBy || cr?.cookingApprovedBy || '').trim(),
+        approvedDate: item?.approvedDate || item?.cookingApprovedAt || item?.date || null,
+        remarks: String(item?.remarks || '').trim()
+      });
+      pendingDone = null;
+    }
+  });
+
+  if (rows.length === 0 && cr?.status) {
+    rows.push({
+      status: normalizeCookingStatus(cr.status),
+      doneBy: String(cr.cookingDoneBy || '').trim(),
+      doneDate: cr?.doneDate || cr?.cookingDoneAt || cr?.date || cr?.updatedAt || cr?.createdAt || null,
+      approvedBy: String(cr.cookingApprovedBy || '').trim(),
+      approvedDate: cr?.approvedDate || cr?.cookingApprovedAt || cr?.date || cr?.updatedAt || cr?.createdAt || null,
+      remarks: String(cr.remarks || '').trim()
+    });
+  }
+
+  if (pendingDone) {
+    rows.push({
+      status: 'Pending',
+      doneBy: pendingDone.doneBy,
+      doneDate: pendingDone.doneDate,
+      approvedBy: '',
+      approvedDate: null,
+      remarks: pendingDone.remarks
+    });
+  }
+
+  return rows;
 };
 const getEntrySmellLabel = (entry: any) => {
   const attempts = getQualityAttemptsForEntry(entry);
@@ -405,6 +512,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const [filterBroker, setFilterBroker] = useState('');
+  const [resampleCookingCount, setResampleCookingCount] = useState(0);
 
   // Pagination
   const [page, setPage] = useState(1);
@@ -412,6 +520,29 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
   const [total, setTotal] = useState(0);
   const PAGE_SIZE = 100;
   const canTakeAction = user?.role === 'admin' || user?.role === 'manager' || user?.role === 'staff' || user?.role === 'quality_supervisor';
+  const renderTabBadge = (count: number, background: string) => (
+    count > 0 ? (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: '18px',
+          height: '18px',
+          marginLeft: '6px',
+          padding: '0 6px',
+          borderRadius: '999px',
+          background,
+          color: '#fff',
+          fontSize: '11px',
+          fontWeight: 800,
+          lineHeight: 1
+        }}
+      >
+        {count}
+      </span>
+    ) : null
+  );
 
   useEffect(() => {
     loadEntries();
@@ -420,6 +551,34 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
   useEffect(() => {
     setPage(1);
   }, [activeTab]);
+
+  useEffect(() => {
+    const loadResampleCookingCount = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await axios.get(`${API_URL}/sample-entries/by-role`, {
+          params: {
+            status: 'RESAMPLE_COOKING_BOOK',
+            page: 1,
+            pageSize: 1,
+            ...(entryType ? { entryType } : {}),
+            ...(excludeEntryType ? { excludeEntryType } : {})
+          },
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = response.data as any;
+        setResampleCookingCount(typeof data.total === 'number'
+          ? data.total
+          : (Array.isArray(data.entries) ? data.entries.length : 0));
+      } catch (error) {
+        console.error('Error loading resample cooking count:', error);
+      }
+    };
+
+    if (!entryType || entryType !== 'RICE_SAMPLE') {
+      loadResampleCookingCount();
+    }
+  }, [entryType, excludeEntryType]);
 
   const acquireSubmissionLock = (key: string) => {
     if (submissionLocksRef.current.has(key)) return false;
@@ -510,6 +669,9 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
       if (data.total != null) {
         setTotal(data.total);
         setTotalPages(data.totalPages || Math.ceil(data.total / PAGE_SIZE));
+        if (status === 'RESAMPLE_COOKING_BOOK') {
+          setResampleCookingCount(data.total);
+        }
       }
     } catch (error: any) {
       showNotification(error.response?.data?.error || 'Failed to load entries', 'error');
@@ -817,21 +979,14 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
     const staffHistory = history.filter((item: any) => !!item?.cookingDoneBy && !item?.status);
     const adminHistory = history.filter((item: any) => !!item?.status);
     const isWaitingForAdmin = staffHistory.length > adminHistory.length;
-    const isResampleCase = activeTab === 'RESAMPLE_COOKING_REPORT' || entry.lotSelectionDecision === 'FAIL';
+    const isResampleCase = activeTab === 'RESAMPLE_COOKING_REPORT' || isResampleWorkflowEntry(entry);
     const { before: historyBeforeResample, after: historyAfterResample, hasSplit: hasResampleSplit } =
       splitHistoryByResampleStart(entry, history);
 
     const firstAdminStatus = normalizeStatus(adminHistory[0]?.status || null);
     const lastAdminStatus = normalizeStatus(adminHistory[adminHistory.length - 1]?.status || cr?.status || null);
 
-    const needsFreshCookingAttempt =
-      entry.lotSelectionDecision === 'PASS_WITH_COOKING'
-      && getTimeValue(entry.lotSelectionAt) > getTimeValue(cr?.updatedAt);
-
     if (!isResampleCase) {
-      if (needsFreshCookingAttempt) {
-        return <span style={{ color: '#e67e22', fontWeight: '700' }}>Pending</span>;
-      }
       if (!cr) {
         return <span style={{ color: '#e67e22', fontWeight: '700' }}>Pending</span>;
       }
@@ -863,6 +1018,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
     }
 
     const pendingApprovalInfo = { color: '#2980b9', bg: '#e3f2fd', label: 'Admin want to approve' };
+    const passWithoutCookingInfo = { color: '#1565c0', bg: '#e3f2fd', label: 'Pass Without Cooking' };
 
     // Re-sample should keep first sampling from pre-resample cycle and second sampling from current resample cycle.
     const beforeAdminHistory = historyBeforeResample.filter((item: any) => !!item?.status);
@@ -880,12 +1036,17 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
       || null
     );
 
+    const shouldShowPassWithoutCookingFirstLine = hasResampleSplit && beforeAdminHistory.length === 0;
     const firstInfo = baselineFirstStatus
       ? toStatusInfo(baselineFirstStatus)
-      : (isWaitingForAdmin && staffHistory.length > 0 ? pendingApprovalInfo : { color: '#e67e22', bg: '#fff3e0', label: 'Pending' });
+      : shouldShowPassWithoutCookingFirstLine
+        ? passWithoutCookingInfo
+        : (isWaitingForAdmin && staffHistory.length > 0 ? pendingApprovalInfo : { color: '#e67e22', bg: '#fff3e0', label: 'Pending' });
 
     // Re-sample always shows two lines (1st + 2nd) for clarity.
-    const showSecondLine = true;
+    const hasCurrentCycleCooking = afterStaffHistory.length > 0 || afterAdminHistory.length > 0;
+    const showFirstLine = Boolean(baselineFirstStatus) || shouldShowPassWithoutCookingFirstLine;
+    const showSecondLine = hasCurrentCycleCooking;
     const latestSecondStatus = normalizeStatus(lastAfterAdmin?.status || null);
     let secondInfo = { color: '#e67e22', bg: '#fff3e0', label: 'Pending' };
 
@@ -910,39 +1071,56 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
       String(secondInfo.label || '').toUpperCase()
     );
 
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', width: '100%', minWidth: 0 }}>
-        <div
-          onClick={() => handleOpenHistory(entry, 'all')}
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '10px', cursor: 'pointer', flexWrap: 'wrap', maxWidth: '100%' }}
-          title="Click to see full history"
-        >
-          <span style={{ fontWeight: 700, color: '#555' }}>1st:</span>
-          <span style={{ color: firstInfo.color, backgroundColor: firstInfo.bg, fontWeight: 700, padding: '1px 6px', borderRadius: '4px', fontSize: '10px' }}>
-            {firstInfo.label}
-          </span>
-        </div>
-        <div
-          onClick={() => handleOpenHistory(entry, 'all')}
-          style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', fontSize: '10px', cursor: 'pointer', maxWidth: '100%' }}
-          title="Click to see full history"
-        >
-          <span style={{ color: '#7c2d12', backgroundColor: '#ffedd5', border: '1px solid #fdba74', fontWeight: '700', padding: '2px 6px', borderRadius: '10px', fontSize: '10px', lineHeight: 1.1, textAlign: 'center' }}>
-            Re-sample
-          </span>
-          {isSecondPendingState && (
-            <span style={{ color: secondInfo.color, backgroundColor: secondInfo.bg, fontWeight: 700, padding: '1px 6px', borderRadius: '4px', fontSize: '10px', lineHeight: 1.1, textAlign: 'center' }}>
-              {secondInfo.label}
-            </span>
-          )}
-        </div>
-        {showSecondLine && !isSecondPendingState && (
+    if (!hasCurrentCycleCooking) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', width: '100%', minWidth: 0 }}>
+          {showFirstLine ? (
+            <div
+              onClick={() => handleOpenHistory(entry, 'all')}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '10px', cursor: 'pointer', flexWrap: 'wrap', maxWidth: '100%' }}
+              title="Click to see full history"
+            >
+              <span style={{ fontWeight: 700, color: '#555' }}>1st:</span>
+              <span style={{ color: firstInfo.color, backgroundColor: firstInfo.bg, fontWeight: 700, padding: '1px 6px', borderRadius: '4px', fontSize: '10px' }}>
+                {firstInfo.label}
+              </span>
+            </div>
+          ) : null}
           <div
             onClick={() => handleOpenHistory(entry, 'all')}
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '10px', cursor: 'pointer', flexWrap: 'wrap', maxWidth: '100%' }}
             title="Click to see full history"
           >
-            <span style={{ fontWeight: 700, color: '#555' }}>2nd:</span>
+            <span style={{ fontWeight: 700, color: '#555' }}>{showFirstLine ? '2nd:' : 'Re-sample:'}</span>
+            <span style={{ color: secondInfo.color, backgroundColor: secondInfo.bg, fontWeight: 700, padding: '1px 6px', borderRadius: '4px', fontSize: '10px' }}>
+              {secondInfo.label}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', width: '100%', minWidth: 0 }}>
+        {showFirstLine ? (
+          <div
+            onClick={() => handleOpenHistory(entry, 'all')}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '10px', cursor: 'pointer', flexWrap: 'wrap', maxWidth: '100%' }}
+            title="Click to see full history"
+          >
+            <span style={{ fontWeight: 700, color: '#555' }}>1st:</span>
+            <span style={{ color: firstInfo.color, backgroundColor: firstInfo.bg, fontWeight: 700, padding: '1px 6px', borderRadius: '4px', fontSize: '10px' }}>
+              {firstInfo.label}
+            </span>
+          </div>
+        ) : null}
+        {showSecondLine && (
+          <div
+            onClick={() => handleOpenHistory(entry, 'all')}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '10px', cursor: 'pointer', flexWrap: 'wrap', maxWidth: '100%' }}
+            title="Click to see full history"
+          >
+            <span style={{ fontWeight: 700, color: '#555' }}>{showFirstLine ? '2nd:' : 'Re-sample:'}</span>
             <span style={{ color: secondInfo.color, backgroundColor: secondInfo.bg, fontWeight: 700, padding: '1px 6px', borderRadius: '4px', fontSize: '10px' }}>
               {secondInfo.label}
             </span>
@@ -960,10 +1138,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
     const adminHistory = history.filter((item: any) => !!item?.status);
     const waitingAdmin = staffHistory.length > adminHistory.length;
     const latestAdminStatus = normalizeStatus(adminHistory[adminHistory.length - 1]?.status || cr?.status || null);
-    const isResampleCase = entry.lotSelectionDecision === 'FAIL' || activeTab === 'RESAMPLE_COOKING_REPORT';
-    const needsFreshCookingAttempt =
-      entry.lotSelectionDecision === 'PASS_WITH_COOKING'
-      && getTimeValue(entry.lotSelectionAt) > getTimeValue(cr?.updatedAt);
+    const isResampleCase = isResampleWorkflowEntry(entry) || activeTab === 'RESAMPLE_COOKING_REPORT';
 
     if (isResampleCase) {
       const assignedUser = String(entry.sampleCollectedBy || '').trim().toLowerCase();
@@ -980,13 +1155,13 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
     // Normal flow: one staff entry, then wait for admin.
     if (!isResampleCase) {
       if (waitingAdmin) return { canAdd: false, reason: 'Awaiting Admin' };
-      if (needsFreshCookingAttempt || !cr || staffHistory.length === 0 || latestAdminStatus === 'RECHECK') {
+      if (!cr || staffHistory.length === 0 || latestAdminStatus === 'RECHECK') {
         return { canAdd: true, reason: '' };
       }
       return { canAdd: false, reason: 'Locked' };
     }
 
-    // Re-sample flow: only use history from current resample cycle (after lotSelectionAt).
+    // Re-sample flow: only use history from current resample cycle determined by attempt count.
     const { after: historyAfterResample, hasSplit: hasResampleSplit } = splitHistoryByResampleStart(entry, history);
     const currentCycleHistory = hasResampleSplit ? historyAfterResample : history;
     const currentCycleStaffHistory = currentCycleHistory.filter((item: any) => !!item?.cookingDoneBy && !item?.status);
@@ -1124,7 +1299,6 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
     if (activeTab !== 'RESAMPLE_COOKING_REPORT') return entries;
     return entries.filter((entry) => {
       if (isResolvedResampleEntry(entry)) return false;
-      if (!String(entry.sampleCollectedBy || '').trim()) return false;
       return hasCurrentCycleQualityData(entry);
     });
   }, [entries, activeTab]);
@@ -1268,6 +1442,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
             }}
           >
             🔄 RESAMPLE COOKING
+            {renderTabBadge(resampleCookingCount, '#b91c1c')}
           </button>
         )}
         {(!excludeEntryType || excludeEntryType !== 'RICE_SAMPLE') && (
@@ -2088,7 +2263,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                     const collectedByDisplay = getCollectedByDisplay(detailEntry, supervisors);
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <div style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#ff9800' : '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#9c27b0' : '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {collectedByDisplay.primary}
                         </div>
                         {collectedByDisplay.secondary ? (
@@ -2152,7 +2327,7 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                 </div>
               )}
 
-              <div style={{ display: 'grid', gridTemplateColumns: getQualityAttemptsForEntry(detailEntry as any).length > 1 ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) 340px', gap: '20px', alignItems: 'flex-start' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: (getQualityAttemptsForEntry(detailEntry as any).length > 1 ? 'minmax(0, 1fr)' : (buildCookingStatusRows(detailEntry as any).length > 0 ? 'minmax(0, 1fr) 340px' : 'minmax(0, 1fr)')), gap: '20px', alignItems: 'flex-start' }}>
                 <div style={{ minWidth: 0 }}>
                   <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px' }}>Quality Parameters</h4>
                   {(() => {
@@ -2186,14 +2361,18 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                     const QItem = ({ label, value }: { label: string; value: React.ReactNode }) => {
                       const isBold = ['Grains Count', 'Paddy WB'].includes(label);
                       return (
-                        <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
-                          <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>{label}</div>
-                          <div style={{ fontSize: '13px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
+                        <div style={{ background: '#f8f9fa', padding: '6px 8px', borderRadius: '6px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
+                          <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '2px', fontWeight: '600', textTransform: 'uppercase' }}>{label}</div>
+                          <div style={{ fontSize: '12px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
                         </div>
                       );
                     };
                     const qualityPhotoUrl = qpList.find((qp: any) => qp?.uploadFileUrl)?.uploadFileUrl;
                     const hasMultipleAttempts = qpList.length > 1;
+                    const hasCookingHistory = Array.isArray((detailEntry as any).cookingReport?.history)
+                      ? (detailEntry as any).cookingReport.history.filter(Boolean).length > 0
+                      : Boolean((detailEntry as any).cookingReport?.status || (detailEntry as any).cookingReport?.remarks);
+                    const useHorizontalQualityHistory = qpList.length > 1;
                     const getAttemptLabel = (attemptNo: number, idx: number) => {
                       const num = attemptNo || idx + 1;
                       if (num === 1) return '1st Sample';
@@ -2202,66 +2381,44 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                       return `${num}th Sample`;
                     };
 
-                    if (hasMultipleAttempts) {
-                      const columns = [
-                        { key: 'reportedBy', label: 'Sample Reported By' },
-                        { key: 'moisture', label: 'Moisture' },
-                        { key: 'cutting', label: 'Cutting' },
-                        { key: 'bend', label: 'Bend' },
-                        { key: 'grainsCount', label: 'Grains Count' },
-                        { key: 'mix', label: 'Mix' },
-                        { key: 'mixS', label: 'S Mix' },
-                        { key: 'mixL', label: 'L Mix' },
-                        { key: 'kandu', label: 'Kandu' },
-                        { key: 'oil', label: 'Oil' },
-                        { key: 'sk', label: 'SK' },
-                        { key: 'wbR', label: 'WB-R' },
-                        { key: 'wbBk', label: 'WB-BK' },
-                        { key: 'wbT', label: 'WB-T' },
-                        { key: 'smell', label: 'Smell' },
-                        { key: 'paddyWb', label: 'Paddy WB' }
-                      ];
-
-                      const getCellValue = (qp: any, key: string) => {
+                    if (useHorizontalQualityHistory) {
+                      const buildAttemptRows = (qp: any) => {
                         const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
                         const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
                         const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
                         const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
-                        if (key === 'reportedBy') return toTitleCase(qp.reportedBy || '-');
-                        if (key === 'moisture') {
-                          const val = displayVal(qp.moistureRaw, qp.moisture);
-                          return val ? `${val}%` : '-';
-                        }
-                        if (key === 'cutting') {
-                          const cut1 = displayVal(qp.cutting1Raw, qp.cutting1);
-                          const cut2 = displayVal(qp.cutting2Raw, qp.cutting2);
-                          return cut1 && cut2 ? `${cut1}x${cut2}` : '-';
-                        }
-                        if (key === 'bend') {
-                          const bend1 = displayVal(qp.bend1Raw, qp.bend1);
-                          const bend2 = displayVal(qp.bend2Raw, qp.bend2);
-                          return bend1 && bend2 ? `${bend1}x${bend2}` : '-';
-                        }
-                        if (key === 'grainsCount') {
-                          const val = displayVal(qp.grainsCountRaw, qp.grainsCount);
-                          return val ? `(${val})` : '-';
-                        }
-                        if (key === 'mix') return displayVal(qp.mixRaw, qp.mix) || '-';
-                        if (key === 'mixS') return displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-';
-                        if (key === 'mixL') return displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-';
-                        if (key === 'kandu') return displayVal(qp.kanduRaw, qp.kandu) || '-';
-                        if (key === 'oil') return displayVal(qp.oilRaw, qp.oil) || '-';
-                        if (key === 'sk') return displayVal(qp.skRaw, qp.sk) || '-';
-                        if (key === 'wbR') return displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-';
-                        if (key === 'wbBk') return displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-';
-                        if (key === 'wbT') return displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-';
-                        if (key === 'smell') {
-                          const smellHasValue = qp.smellHas ?? (detailEntry as any).smellHas;
-                          const smellTypeValue = qp.smellType ?? (detailEntry as any).smellType;
-                          return smellHasValue ? toTitleCase(smellTypeValue || 'Yes') : '-';
-                        }
-                        if (key === 'paddyWb') return displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-';
-                        return '-';
+                        const smellHasValue = qp.smellHas ?? (detailEntry as any).smellHas;
+                        const smellTypeValue = qp.smellType ?? (detailEntry as any).smellType;
+                        return [
+                          [
+                            { label: 'Sample Collected By', value: toTitleCase(qp.sampleCollectedBy || detailEntry.sampleCollectedBy || '-'), span: 2 },
+                            { label: 'Sample Reported By', value: toTitleCase(qp.reportedBy || '-'), span: 2 },
+                            { label: 'Reported At', value: formatShortDateTime(qp.updatedAt || qp.createdAt || null), span: 2 },
+                            { label: 'Moisture', value: (() => { const val = displayVal(qp.moistureRaw, qp.moisture); return val ? `${val}%` : '-'; })() },
+                            { label: 'Cutting', value: (() => { const cut1 = displayVal(qp.cutting1Raw, qp.cutting1); const cut2 = displayVal(qp.cutting2Raw, qp.cutting2); return cut1 && cut2 ? `${cut1}x${cut2}` : '-'; })() },
+                            { label: 'Bend', value: (() => { const bend1 = displayVal(qp.bend1Raw, qp.bend1); const bend2 = displayVal(qp.bend2Raw, qp.bend2); return bend1 && bend2 ? `${bend1}x${bend2}` : '-'; })() }
+                          ],
+                          [
+                            { label: 'Grains Count', value: (() => { const val = displayVal(qp.grainsCountRaw, qp.grainsCount); return val ? `(${val})` : '-'; })() },
+                            { label: 'Mix', value: displayVal(qp.mixRaw, qp.mix) || '-' },
+                            { label: 'S Mix', value: displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-' },
+                            { label: 'L Mix', value: displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-' },
+                            { label: 'Kandu', value: displayVal(qp.kanduRaw, qp.kandu) || '-' }
+                          ],
+                          [
+                            { label: 'Oil', value: displayVal(qp.oilRaw, qp.oil) || '-' },
+                            { label: 'SK', value: displayVal(qp.skRaw, qp.sk) || '-' },
+                            { label: 'WB-R', value: displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-' },
+                            { label: 'WB-BK', value: displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-' },
+                            { label: 'WB-T', value: displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-' }
+                          ],
+                          [
+                            { label: 'Paddy WB', value: displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-', span: 5 }
+                          ].filter((item) => item.value && item.value !== '-'),
+                          [
+                            { label: 'Smell', value: smellHasValue ? toTitleCase(smellTypeValue || 'Yes') : '-' }
+                          ].filter((item) => item.value && item.value !== '-')
+                        ];
                       };
 
                       return (
@@ -2276,32 +2433,26 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                               />
                             </div>
                           )}
-                          <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', minWidth: '1180px', borderCollapse: 'collapse', fontSize: '12px' }}>
-                              <thead>
-                                <tr>
-                                  <th style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'left', whiteSpace: 'nowrap' }}>Sample</th>
-                                  {columns.map((col) => (
-                                    <th key={col.key} style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'center', whiteSpace: 'nowrap' }}>{col.label}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {qpList.map((qp: any, idx: number) => (
-                                  <tr key={`${qp.attemptNo || idx}-row`}>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '6px', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                                      {getAttemptLabel(qp.attemptNo, idx)}
-                                    </td>
-                                    {columns.map((col) => (
-                                      <td key={`${qp.attemptNo || idx}-${col.key}`} style={{ border: '1px solid #e0e0e0', padding: '6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                                        {getCellValue(qp, col.key)}
-                                      </td>
-                                    ))}
-                                  </tr>
+                          {qpList.map((qp: any, idx: number) => (
+                            <div key={`${qp.attemptNo || idx}-cards`} style={{ display: 'grid', gridTemplateColumns: '160px minmax(0, 1fr)', gap: '16px', alignItems: 'start' }}>
+                              <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '10px', minHeight: '62px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: '900', color: '#9a3412' }}>
+                                {getAttemptLabel(qp.attemptNo, idx)}
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                {buildAttemptRows(qp).map((row, rowIdx) => (
+                                  row.length > 0 ? (
+                                    <div key={`${qp.attemptNo || idx}-row-${rowIdx}`} style={{ display: 'grid', gridTemplateColumns: rowIdx === 0 ? 'repeat(9, minmax(0, 1fr))' : `repeat(${row.length}, minmax(0, 1fr))`, gap: '12px' }}>
+                                      {row.map((item, cardIdx) => (
+                                        <div key={`${qp.attemptNo || idx}-${item.label}-${cardIdx}`} style={{ gridColumn: rowIdx === 0 ? `span ${item.span || 1}` : undefined }}>
+                                          <QItem label={item.label} value={item.value} />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : null
                                 ))}
-                              </tbody>
-                            </table>
-                          </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       );
                     }
@@ -2364,21 +2515,16 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                           if (skVal) row3.push({ label: 'SK', value: skVal });
 
                           const row4: { label: string; value: React.ReactNode }[] = [];
+                          const row5: { label: string; value: React.ReactNode }[] = [];
                           const wbRVal = displayVal((qp as any).wbRRaw, qp.wbR, wbOn);
                           const wbBkVal = displayVal((qp as any).wbBkRaw, qp.wbBk, wbOn);
                           const wbTVal = displayVal((qp as any).wbTRaw, qp.wbT, wbOn);
                           if (wbRVal) row4.push({ label: 'WB-R', value: wbRVal });
                           if (wbBkVal) row4.push({ label: 'WB-BK', value: wbBkVal });
                           if (wbTVal) row4.push({ label: 'WB-T', value: wbTVal });
-                          const smellHas = (qp as any).smellHas ?? (qpList.length === 1 ? (detailEntry as any).smellHas : undefined);
-                          const smellType = (qp as any).smellType ?? (qpList.length === 1 ? (detailEntry as any).smellType : undefined);
-                          if (smellHas || (smellType && String(smellType).trim())) {
-                            row4.push({ label: 'Smell', value: toTitleCase(smellType || 'Yes') });
-                          }
-
                           const hasPaddyWb = displayVal((qp as any).paddyWbRaw, qp.paddyWb, paddyOn);
                           if (hasPaddyWb) {
-                            row4.push({
+                            row5.push({
                               label: 'Paddy WB',
                               value: (
                                 <span style={{
@@ -2389,6 +2535,11 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                                 </span>
                               )
                             });
+                          }
+                          const smellHas = (qp as any).smellHas ?? (qpList.length === 1 ? (detailEntry as any).smellHas : undefined);
+                          const smellType = (qp as any).smellType ?? (qpList.length === 1 ? (detailEntry as any).smellType : undefined);
+                          if (smellHas || (smellType && String(smellType).trim())) {
+                            row5.push({ label: 'Smell', value: toTitleCase(smellType || 'Yes') });
                           }
 
                           return (
@@ -2402,11 +2553,11 @@ const CookingReport: React.FC<CookingReportProps> = ({ entryType, excludeEntryTy
                               {row2.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row2.length}, 1fr)`, gap: '8px' }}>{row2.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
                               {row3.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row3.length}, 1fr)`, gap: '8px' }}>{row3.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
                               {row4.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row4.length}, 1fr)`, gap: '8px' }}>{row4.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                              {row5.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row5.length}, 1fr)`, gap: '8px' }}>{row5.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
                               {qp.reportedBy && (
-                                <div style={{ marginTop: '8px' }}>
-                                  <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
-                                    <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>Sample Reported By</div>
-                                    <div style={{ fontSize: '13px', fontWeight: '700', color: '#2c3e50' }}>{toSentenceCase(qp.reportedBy)}</div>
+                                <div style={{ marginTop: '8px', borderTop: '1px dashed #e2e8f0', paddingTop: '6px' }}>
+                                  <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600', textAlign: 'center' }}>
+                                    Reported By: <span style={{ color: '#1e293b', fontWeight: '800', fontSize: '13px' }}>{toSentenceCase(qp.reportedBy)}</span>
                                   </div>
                                 </div>
                               )}

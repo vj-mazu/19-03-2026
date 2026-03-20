@@ -43,6 +43,7 @@ const getEntryTypeLabel = (entryType?: string) => {
   return 'MS';
 };
 const getDisplayEntryType = (entry: ResampleEntry) => {
+  if (String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL') return 'LS';
   if (String(entry.lorryNumber || '').trim()) return 'RL';
   return getEntryTypeLabel(entry.entryType);
 };
@@ -68,12 +69,19 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
 
   const [paddySupervisors, setPaddySupervisors] = useState<{ id: number; username: string; fullName?: string | null; staffType?: string | null }[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
-  const isResampleAssigned = (entry: ResampleEntry) => {
-    const assignedName = String(entry.sampleCollectedBy || '').trim().toLowerCase();
-    return entry.lotSelectionDecision === 'FAIL'
-      && !!assignedName
-      && assignedName !== 'broker office sample';
+  const getResampleTimelineNames = (entry: ResampleEntry) => {
+    const timeline = Array.isArray((entry as any).resampleCollectedTimeline) ? (entry as any).resampleCollectedTimeline : [];
+    const history = Array.isArray((entry as any).resampleCollectedHistory) ? (entry as any).resampleCollectedHistory : [];
+    return (timeline.length > 0 ? timeline : history)
+      .map((item: any) => typeof item === 'string' ? item : item?.name)
+      .map((value: any) => String(value || '').trim())
+      .filter((value: string) => value && value.toLowerCase() !== 'broker office sample');
   };
+  const getLatestResampleAssignedName = (entry: ResampleEntry) => {
+    const names = getResampleTimelineNames(entry);
+    return names.length > 0 ? names[names.length - 1] : '';
+  };
+  const isResampleAssigned = (entry: ResampleEntry) => getLatestResampleAssignedName(entry) !== '';
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -143,14 +151,14 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
     const assigned = isResampleAssigned(entry);
     const selected = assignments[entry.id] !== undefined
       ? assignments[entry.id]
-      : (assigned ? (entry.sampleCollectedBy || '') : '');
+      : (assigned ? getLatestResampleAssignedName(entry) : '');
 
     if (!selected) {
       showNotification('Select Sample Collected By', 'error');
       return;
     }
 
-    if (assigned && selected === entry.sampleCollectedBy && entry.sampleCollectedBy !== null) {
+    if (assigned && selected === getLatestResampleAssignedName(entry)) {
       showNotification('No changes made to supervisor assignment', 'info');
       return;
     }
@@ -205,14 +213,33 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
                 brokerSeq++;
                 return (
                   <div key={brokerName} style={{ marginBottom: 0 }}>
-                    {brokerIdx === 0 && <div style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)', color: 'white', padding: '6px 10px', fontWeight: 700, fontSize: '14px', textAlign: 'left', letterSpacing: '0.5px' }}>{dateStr} Resample Assignments</div>}
-                    <div style={{ background: '#e8eaf6', color: '#000', padding: '4px 10px', fontWeight: 700, fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ fontSize: '13.5px', fontWeight: 800 }}>{brokerSeq}.</span> {brokerName}</div>
+                    {brokerIdx === 0 && (
+                      <div style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)', color: 'white', padding: '8px 12px', fontWeight: 700, fontSize: '14px', textAlign: 'center', letterSpacing: '0.3px' }}>
+                        {dateStr} Resample Assignments
+                      </div>
+                    )}
+                    <div style={{ background: '#e8eaf6', color: '#000', padding: '5px 12px', fontWeight: 700, fontSize: '13.5px', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '4px', textAlign: 'left' }}><span style={{ fontSize: '13.5px', fontWeight: 800 }}>{brokerSeq}.</span> {brokerName}</div>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', border: '1px solid #000' }}>
                       <thead style={{ position: 'sticky', top: 56, zIndex: 2 }}>
                         <tr style={{ backgroundColor: '#1a237e', color: 'white' }}>
-                          {['SL No', 'Type', 'Bags', 'Pkg', 'Party Name', 'Paddy Location', 'Variety', 'Current Sample Collected By', 'Assign User', 'Action'].map((header) => (
-                            <th key={header} style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap', fontSize: '12px' }}>{header}</th>
-                          ))}
+                          {['SL No', 'Type', 'Bags', 'Pkg', 'Party Name', 'Paddy Location', 'Variety', 'Current Sample Collected By', 'Assign User', 'Action'].map((header) => {
+                            const leftAlignedHeaders = new Set(['Party Name', 'Paddy Location', 'Variety', 'Current Sample Collected By']);
+                            return (
+                              <th
+                                key={header}
+                                style={{
+                                  border: '1px solid #000',
+                                  padding: header === 'SL No' ? '3px 8px' : '4px 6px',
+                                  textAlign: header === 'SL No' ? 'left' : (leftAlignedHeaders.has(header) ? 'left' : 'center'),
+                                  fontWeight: 700,
+                                  whiteSpace: 'nowrap',
+                                  fontSize: '12px'
+                                }}
+                              >
+                                {header}
+                              </th>
+                            );
+                          })}
                         </tr>
                       </thead>
                       <tbody>
@@ -237,11 +264,11 @@ const ResampleAllotment: React.FC<ResampleAllotmentProps> = ({ entryType, exclud
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left' }}>{toTitleCase(entry.location)}</td>
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left' }}>{toTitleCase(entry.variety)}</td>
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left' }}>
-                              {getCollectorLabel(assignments[entry.id] ?? entry.sampleCollectedBy, paddySupervisors)}
+                              {getCollectorLabel(assignments[entry.id] ?? getLatestResampleAssignedName(entry), paddySupervisors)}
                             </td>
                             <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'center' }}>
                               <select
-                                value={assignments[entry.id] ?? (assigned ? (entry.sampleCollectedBy ?? '') : '')}
+                                value={assignments[entry.id] ?? (assigned ? getLatestResampleAssignedName(entry) : '')}
                                 onChange={(e) => setAssignments(prev => ({ ...prev, [entry.id]: e.target.value }))}
                                 style={{ padding: '4px 6px', fontSize: '12px', borderRadius: '4px', border: '1px solid #ccc', minWidth: '160px' }}
                               >

@@ -3,7 +3,18 @@ const ValidationService = require('./ValidationService');
 const AuditService = require('./AuditService');
 const SampleEntryOffering = require('../models/SampleEntryOffering');
 
-const OFFER_KEYS = ['offer1', 'offer2', 'offer3'];
+const OFFER_KEY_PATTERN = /^offer(\d+)$/i;
+const isValidOfferKey = (value) => OFFER_KEY_PATTERN.test(String(value || '').trim());
+const getOfferIndex = (value) => {
+  const match = String(value || '').trim().match(OFFER_KEY_PATTERN);
+  const index = match ? Number(match[1]) : NaN;
+  return Number.isFinite(index) && index > 0 ? index : 1;
+};
+const createOfferKey = (index) => `offer${Math.max(1, Number(index) || 1)}`;
+const getNextOfferKey = (versions = []) => {
+  const maxIndex = versions.reduce((max, offer) => Math.max(max, getOfferIndex(offer?.key)), 0);
+  return createOfferKey(maxIndex + 1);
+};
 const LF_RATE_TYPES = new Set(['PD_LOOSE', 'MD_LOOSE', 'PD_WB']);
 const EGB_RATE_TYPES = new Set(['PD_LOOSE', 'MD_LOOSE']);
 const hasLfForRateType = (value) => LF_RATE_TYPES.has(String(value || '').trim().toUpperCase());
@@ -137,6 +148,59 @@ const hasSampleBookReadySnapshot = (attempt = {}) => {
   if (hasFullQualitySnapshot(attempt)) return true;
   return !hasAnyDetailedQuality(attempt);
 };
+const normalizeAttemptValue = (value) => String(value ?? '').trim().toLowerCase();
+const areQualityAttemptsEquivalent = (left = {}, right = {}) => {
+  const fields = [
+    'reportedBy',
+    'moistureRaw', 'moisture',
+    'grainsCountRaw', 'grainsCount',
+    'cutting1Raw', 'cutting1',
+    'cutting2Raw', 'cutting2',
+    'bend1Raw', 'bend1',
+    'bend2Raw', 'bend2',
+    'mixRaw', 'mix',
+    'mixSRaw', 'mixS',
+    'mixLRaw', 'mixL',
+    'kanduRaw', 'kandu',
+    'oilRaw', 'oil',
+    'skRaw', 'sk',
+    'wbRRaw', 'wbR',
+    'wbBkRaw', 'wbBk',
+    'wbTRaw', 'wbT',
+    'paddyWbRaw', 'paddyWb',
+    'smellHas', 'smellType'
+  ];
+  return fields.every((field) => normalizeAttemptValue(left?.[field]) === normalizeAttemptValue(right?.[field]));
+};
+const getQualityAttemptsForEntry = (entry = {}) => {
+  const attempts = Array.isArray(entry.qualityAttemptDetails)
+    ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0))
+    : [];
+  const currentQuality = entry.qualityParameters;
+
+  if (!currentQuality || !hasQualitySnapshot(currentQuality)) {
+    return attempts;
+  }
+
+  const alreadyIncluded = attempts.some((attempt) => (
+    (attempt.id && currentQuality.id && String(attempt.id) === String(currentQuality.id))
+    || areQualityAttemptsEquivalent(attempt, currentQuality)
+  ));
+
+  if (alreadyIncluded) {
+    return attempts.map((attempt, index) => ({ ...attempt, attemptNo: index + 1 }));
+  }
+
+  const mergedAttempts = [
+    ...attempts,
+    {
+      ...currentQuality,
+      attemptNo: attempts.length + 1
+    }
+  ];
+
+  return mergedAttempts.map((attempt, index) => ({ ...attempt, attemptNo: index + 1 }));
+};
 const isResampleWorkflowEntry = (entry = {}) => {
   const decision = String(entry.lotSelectionDecision || '').toUpperCase();
   return decision === 'FAIL'
@@ -144,9 +208,7 @@ const isResampleWorkflowEntry = (entry = {}) => {
     || (decision === 'PASS_WITH_COOKING' && Number(entry.qualityReportAttempts || 0) > 1);
 };
 const hasPostResampleAttempt = (entry = {}, predicate = hasQualitySnapshot) => {
-  const attempts = Array.isArray(entry.qualityAttemptDetails)
-    ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0))
-    : [];
+  const attempts = getQualityAttemptsForEntry(entry);
 
   if (!isResampleWorkflowEntry(entry) || attempts.length <= 1) {
     return false;
@@ -155,18 +217,40 @@ const hasPostResampleAttempt = (entry = {}, predicate = hasQualitySnapshot) => {
   const latestAttempt = attempts[attempts.length - 1] || null;
   return !!latestAttempt && predicate(latestAttempt);
 };
+const hasAssignedResampleCollector = (entry = {}) => {
+  const timelineNames = [
+    ...(Array.isArray(entry.resampleCollectedTimeline) ? entry.resampleCollectedTimeline : []),
+    ...(Array.isArray(entry.resampleCollectedHistory) ? entry.resampleCollectedHistory : [])
+  ]
+    .map((item) => String(item?.sampleCollectedBy || item?.name || '').trim().toLowerCase())
+    .filter(Boolean);
 
-const getOfferLabel = (key) => `Offer ${OFFER_KEYS.indexOf(key) + 1}`;
+  if (timelineNames.length > 0) {
+    return timelineNames.some((name) => name !== 'broker office sample');
+  }
+
+  const assignedName = String(entry.sampleCollectedBy || '').trim().toLowerCase();
+  return !!assignedName && assignedName !== 'broker office sample';
+};
+const hasCompletedResampleAttempt = (entry = {}, predicate = hasQualitySnapshot) => {
+  if (!hasAssignedResampleCollector(entry)) return false;
+  const workflow = String(entry.workflowStatus || '').toUpperCase();
+  if (workflow === 'STAFF_ENTRY' || workflow === 'LOT_ALLOTMENT') return false;
+  return hasPostResampleAttempt(entry, predicate);
+};
+
+const getOfferLabel = (key) => `Offer ${getOfferIndex(key)}`;
 
 const ensureOfferVersions = (source = {}) => {
   if (Array.isArray(source.offerVersions) && source.offerVersions.length > 0) {
     return source.offerVersions
-      .filter((offer) => OFFER_KEYS.includes(offer?.key))
+      .filter((offer) => isValidOfferKey(offer?.key))
       .map((offer) => ({
         ...offer,
         key: offer.key,
         label: offer.label || getOfferLabel(offer.key)
-      }));
+      }))
+      .sort((left, right) => getOfferIndex(left.key) - getOfferIndex(right.key));
   }
 
   if (
@@ -223,7 +307,7 @@ const getLatestOffer = (versions = []) => {
     const leftDate = new Date(left.updatedAt || left.createdAt || 0).getTime();
     const rightDate = new Date(right.updatedAt || right.createdAt || 0).getTime();
     if (leftDate !== rightDate) return rightDate - leftDate;
-    return OFFER_KEYS.indexOf(right.key) - OFFER_KEYS.indexOf(left.key);
+    return getOfferIndex(right.key) - getOfferIndex(left.key);
   })[0];
 };
 
@@ -253,7 +337,11 @@ const buildOfferPayload = (priceData, existingOffer = {}, slotKey) => {
     key: slotKey,
     label: getOfferLabel(slotKey),
     createdAt: existingOffer.createdAt || new Date().toISOString(),
+    createdBy: existingOffer.createdBy || null,
+    createdByRole: existingOffer.createdByRole || null,
     updatedAt: new Date().toISOString(),
+    updatedBy: existingOffer.updatedBy || null,
+    updatedByRole: existingOffer.updatedByRole || null,
     offerRate: offerAmount,
     sute: toNumberOrDefault(priceData.sute ?? existingOffer.sute, 0),
     suteUnit: normalizeSuteUnit(priceData.suteUnit || existingOffer.suteUnit || priceData.suit || 'per_ton'),
@@ -368,12 +456,12 @@ class SampleEntryService {
       throw new Error('Sample entry not found');
     }
 
-    if (mode === 'offer' && !['admin', 'owner'].includes(userRole)) {
-      throw new Error('Only admin or owner can update offering price');
+    if (mode === 'offer' && !['admin', 'owner', 'manager'].includes(userRole)) {
+      throw new Error('Only admin, owner, or manager can update offering price');
     }
 
-    if (mode === 'final' && !['admin', 'owner', 'manager'].includes(userRole)) {
-      throw new Error('Only admin, owner, or manager can update final price');
+    if (mode === 'final' && !['admin', 'owner'].includes(userRole)) {
+      throw new Error('Only admin or owner can update final price');
     }
 
     return entry;
@@ -455,14 +543,15 @@ class SampleEntryService {
       if (requestedStatus === 'MILL_SAMPLE' || requestedStatus === 'LOCATION_SAMPLE') {
         result.entries = result.entries.filter((entry) => {
           if (String(entry.lotSelectionDecision || '').toUpperCase() !== 'FAIL') return true;
-
-          return !hasPostResampleAttempt(entry, hasQualitySnapshot);
+          if (hasCompletedResampleAttempt(entry, hasQualitySnapshot)) return false;
+          const assignedToResampleCollector = hasAssignedResampleCollector(entry);
+          return requestedStatus === 'LOCATION_SAMPLE' && assignedToResampleCollector;
         });
       }
       if (requestedStatus === 'PENDING_LOT_SELECTION') {
         result.entries = result.entries.filter((entry) => {
           if (String(entry.lotSelectionDecision || '').toUpperCase() !== 'FAIL') return true;
-          return hasPostResampleAttempt(entry, hasSampleBookReadySnapshot);
+          return hasCompletedResampleAttempt(entry, hasSampleBookReadySnapshot);
         });
       }
       if (requestedStatus === 'COOKING_BOOK') {
@@ -479,7 +568,7 @@ class SampleEntryService {
         result.entries = result.entries.filter((entry) => {
           if (String(entry.workflowStatus || '').toUpperCase() !== 'COOKING_REPORT') return false;
           if (!isResampleWorkflowEntry(entry)) return false;
-          return hasPostResampleAttempt(entry, hasQualitySnapshot);
+          return hasCompletedResampleAttempt(entry, hasSampleBookReadySnapshot);
         });
       }
     }
@@ -592,10 +681,16 @@ class SampleEntryService {
 
     const existing = offering ? offering.toJSON() : {};
     const offerVersions = ensureOfferVersions(existing);
-    const requestedSlot = OFFER_KEYS.includes(priceData.offerSlot) ? priceData.offerSlot : null;
-    const slotKey = requestedSlot || OFFER_KEYS.find((key) => !offerVersions.some((offerItem) => offerItem.key === key)) || 'offer3';
+    const requestedSlot = isValidOfferKey(priceData.offerSlot) ? String(priceData.offerSlot).trim() : null;
+    const slotKey = requestedSlot || getNextOfferKey(offerVersions);
     const existingOffer = offerVersions.find((offerItem) => offerItem.key === slotKey) || {};
-    const nextOffer = buildOfferPayload(priceData, existingOffer, slotKey);
+    const nextOffer = {
+      ...buildOfferPayload(priceData, existingOffer, slotKey),
+      createdBy: existingOffer.createdBy || userId,
+      createdByRole: existingOffer.createdByRole || userRole,
+      updatedBy: userId,
+      updatedByRole: userRole
+    };
     const nextVersions = offerVersions.filter((offerItem) => offerItem.key !== slotKey);
     nextVersions.push(nextOffer);
 

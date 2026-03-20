@@ -20,24 +20,43 @@ interface SampleEntry {
   entryType?: string;
   sampleCollectedBy?: string;
   workflowStatus: string;
+  lotSelectionDecision?: string;
   qualityParameters?: {
     moisture: number;
+    moistureRaw?: number;
     cutting1: number;
+    cutting1Raw?: number;
     cutting2: number;
+    cutting2Raw?: number;
     bend: number;
     bend1: number;
+    bend1Raw?: number;
     bend2: number;
+    bend2Raw?: number;
     mixS: number;
+    mixSRaw?: number;
+    smixEnabled?: boolean;
     mixL: number;
+    mixLRaw?: number;
+    lmixEnabled?: boolean;
     mix: number;
+    mixRaw?: number;
     kandu: number;
+    kanduRaw?: number;
     oil: number;
+    oilRaw?: number;
     sk: number;
+    skRaw?: number;
     grainsCount: number;
+    grainsCountRaw?: number;
     wbR: number;
+    wbRRaw?: number;
     wbBk: number;
+    wbBkRaw?: number;
     wbT: number;
+    wbTRaw?: number;
     paddyWb: number;
+    paddyWbRaw?: number;
     smellHas?: boolean;
     smellType?: string | null;
     gramsReport?: string;
@@ -97,42 +116,53 @@ const hasQualitySnapshot = (attempt: any) => {
 
   return hasMoisture && (hasGrains || hasDetailedQuality);
 };
+const normalizeAttemptValue = (value: any) => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  return String(value);
+};
+const areQualityAttemptsEquivalent = (left: any, right: any) => {
+  const keys = [
+    'reportedBy',
+    'moistureRaw', 'moisture',
+    'dryMoistureRaw', 'dryMoisture',
+    'cutting1Raw', 'cutting1', 'cutting2Raw', 'cutting2',
+    'bend1Raw', 'bend1', 'bend2Raw', 'bend2',
+    'grainsCountRaw', 'grainsCount',
+    'mixRaw', 'mix', 'mixSRaw', 'mixS', 'mixLRaw', 'mixL',
+    'kanduRaw', 'kandu', 'oilRaw', 'oil', 'skRaw', 'sk',
+    'wbRRaw', 'wbR', 'wbBkRaw', 'wbBk', 'wbTRaw', 'wbT',
+    'paddyWbRaw', 'paddyWb',
+    'gramsReport', 'smellHas', 'smellType'
+  ];
+  return keys.every((key) => normalizeAttemptValue(left?.[key]) === normalizeAttemptValue(right?.[key]));
+};
+const isResampleWorkflowEntry = (entry: any) => {
+  const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
+    ? entry.qualityAttemptDetails.filter(Boolean)
+    : [];
+  const decision = String(entry?.lotSelectionDecision || '').toUpperCase();
+  return decision === 'FAIL'
+    || decision === 'PASS_WITH_COOKING'
+    || Boolean(entry?.resampleStartAt)
+    || baseAttempts.length > 1
+    || Number(entry?.qualityReportAttempts || 0) > 1;
+};
 const getQualityAttemptsForEntry = (entry: any) => {
   const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
     ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
     : [];
   const currentQuality = entry?.qualityParameters;
 
-  if (!currentQuality) return baseAttempts;
-  if (baseAttempts.length === 0) return hasQualitySnapshot(currentQuality) ? [currentQuality] : [];
+  if (baseAttempts.length > 0) {
+    return baseAttempts.map((attempt: any, index: number) => ({
+      ...attempt,
+      attemptNo: Number(attempt?.attemptNo) || index + 1
+    }));
+  }
 
-  const latestStoredAttempt = baseAttempts[baseAttempts.length - 1];
-  const latestStoredTs = getTimeValue(latestStoredAttempt?.updatedAt || latestStoredAttempt?.createdAt || null);
-  const currentQualityTs = getTimeValue(currentQuality.updatedAt || currentQuality.createdAt || null);
-  const lotSelectionTs = getTimeValue(entry?.lotSelectionAt || null);
-  const isResampleFlow = String(entry?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
-    || String(entry?.lotSelectionDecision || '').toUpperCase() === 'PASS_WITH_COOKING'
-    || baseAttempts.length > 1
-    || (Number(entry?.qualityReportAttempts) > 1);
-  const currentAlreadyIncluded = baseAttempts.some((a: any) =>
-    (a.id && currentQuality.id && String(a.id) === String(currentQuality.id))
-    || (currentQualityTs > 0 && latestStoredTs > 0 && currentQualityTs === latestStoredTs)
-  );
-  const shouldAppendCurrentQuality =
-    hasQualitySnapshot(currentQuality) &&
-    isResampleFlow &&
-    !currentAlreadyIncluded &&
-    currentQualityTs > 0;
-
-  if (!shouldAppendCurrentQuality) return baseAttempts;
-
-  return [
-    ...baseAttempts,
-    {
-      ...currentQuality,
-      attemptNo: Math.max(...baseAttempts.map((attempt: any) => Number(attempt.attemptNo) || 0), 1) + 1
-    }
-  ];
+  if (!currentQuality || !hasQualitySnapshot(currentQuality)) return [];
+  return [{ ...currentQuality, attemptNo: 1 }];
 };
 const formatGramsReport = (value?: string): string => {
   if (value === '5gms') return '5 gms';
@@ -140,8 +170,8 @@ const formatGramsReport = (value?: string): string => {
   return '--';
 };
 const getSelectionDisplayDate = (entry: SampleEntry, selectionView: 'ALL' | 'RESAMPLE_PENDING') => {
-  if (selectionView === 'RESAMPLE_PENDING' && (entry as any).lotSelectionAt) {
-    return (entry as any).lotSelectionAt;
+  if (selectionView === 'RESAMPLE_PENDING') {
+    return (entry as any).resampleStartAt || (entry as any).lotSelectionAt || entry.entryDate;
   }
   return entry.entryDate;
 };
@@ -174,10 +204,13 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
     return raw ? toTitleCase(raw) : '-';
   };
   const renderCollectedBy = (entry: SampleEntry) => {
-    if ((entry as any).sampleGivenToOffice) {
+    const isResample = String((entry as any)?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
+      || Number((entry as any)?.qualityReportAttempts || 0) > 1
+      || (Array.isArray((entry as any)?.resampleCollectedHistory) && (entry as any).resampleCollectedHistory.length > 0);
+    if ((entry as any).sampleGivenToOffice || isResample) {
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          <div style={{ fontWeight: '700', color: '#e65100' }}>{getCreatorLabel(entry)}</div>
+          <div style={{ fontWeight: '700', color: '#7e22ce' }}>{getCreatorLabel(entry)}</div>
           <div style={{ fontWeight: '600', color: '#333' }}>{getCollectorLabel(entry.sampleCollectedBy || '-')}</div>
         </div>
       );
@@ -334,6 +367,29 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
     () => entries.filter((entry) => entry.lotSelectionDecision !== 'FAIL').length,
     [entries]
   );
+  const renderTabBadge = (count: number, background: string) => (
+    count > 0 ? (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: '18px',
+          height: '18px',
+          marginLeft: '6px',
+          padding: '0 6px',
+          borderRadius: '999px',
+          background,
+          color: '#fff',
+          fontSize: '11px',
+          fontWeight: 800,
+          lineHeight: 1
+        }}
+      >
+        {count}
+      </span>
+    ) : null
+  );
 
   // Group entries by date then broker (no client-side filtering — filters are server-side now)
   const groupedEntries = useMemo(() => {
@@ -371,14 +427,16 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
           onClick={() => setSelectionView('ALL')}
           style={{ padding: '8px 14px', fontSize: '13px', fontWeight: 700, border: 'none', borderRadius: '4px', background: selectionView === 'ALL' ? '#1565c0' : '#90a4ae', color: 'white', cursor: 'pointer' }}
         >
-          Pending Sample Selection ({normalPendingCount})
+          Pending Sample Selection
+          {renderTabBadge(normalPendingCount, '#0d47a1')}
         </button>
         <button
           type="button"
           onClick={() => setSelectionView('RESAMPLE_PENDING')}
           style={{ padding: '8px 14px', fontSize: '13px', fontWeight: 700, border: 'none', borderRadius: '4px', background: selectionView === 'RESAMPLE_PENDING' ? '#ef6c00' : '#90a4ae', color: 'white', cursor: 'pointer' }}
         >
-          Resample Pending ({resamplePendingCount})
+          Resample Pending
+          {renderTabBadge(resamplePendingCount, '#c2410c')}
         </button>
       </div>
       {/* Collapsible Filter Bar */}
@@ -588,22 +646,19 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', verticalAlign: 'middle', fontSize: '11px', textAlign: 'center' }}>
                                       {/^\d+$/.test(String(entry.packaging || '75')) ? `${entry.packaging || '75'} Kg` : entry.packaging || '75'}
                                     </td>
-                                    <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                      <button
-                                        type="button"
-                                        onClick={() => openEntryDetail(entry)}
-                                        style={{ background: 'transparent', border: 'none', color: '#1565c0', textDecoration: 'underline', cursor: 'pointer', fontWeight: '700', fontSize: '12px', padding: 0, textAlign: 'left' }}
-                                      >
-                                        {toTitleCase(entry.partyName) || ''}
-                                      </button>
-                                      {entry.entryType === 'DIRECT_LOADED_VEHICLE' && entry.lorryNumber ? <div style={{ fontSize: '11px', color: '#555', fontWeight: '600' }}>{entry.lorryNumber.toUpperCase()}</div> : ''}
+                                    <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: '700', color: '#1f2937' }}>
+                                      {/* Pending and resample-pending should show plain party text, not hyperlink */}
+                                      {entry.entryType === 'DIRECT_LOADED_VEHICLE' && !entry.partyName?.trim() && entry.lorryNumber 
+                                        ? entry.lorryNumber.toUpperCase() 
+                                        : (toTitleCase(entry.partyName) || (entry.lorryNumber?.toUpperCase() || ''))}
+                                      {entry.entryType === 'DIRECT_LOADED_VEHICLE' && entry.partyName?.trim() && entry.lorryNumber ? <div style={{ fontSize: '11px', color: '#555', fontWeight: '600' }}>{entry.lorryNumber.toUpperCase()}</div> : ''}
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(entry.location) || '-'}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(entry.variety)}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                       {renderCollectedBy(entry)}
                                     </td>
-                                    <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'center', verticalAlign: 'middle', fontSize: '12px', color: '#000' }}>{qp?.grainsCountRaw != null && String(qp?.grainsCountRaw).trim() !== '' ? `(${fmtWhole(qp.grainsCountRaw, qp.grainsCount)})` : (qp?.grainsCount != null && qp?.grainsCount !== '' ? `(${fmtWhole(null, qp.grainsCount)})` : '-')}</td>
+                                    <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'center', verticalAlign: 'middle', fontSize: '12px', color: '#000' }}>{qp?.grainsCountRaw != null && String(qp?.grainsCountRaw).trim() !== '' ? `(${fmtWhole(qp.grainsCountRaw, qp.grainsCount)})` : (qp?.grainsCount != null && String(qp?.grainsCount).trim() !== '' ? `(${fmtWhole(null, qp.grainsCount)})` : '-')}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'center', verticalAlign: 'middle', fontSize: '11px', fontWeight: '600' }}>
                                       {qp && (fmtVal(qp.moistureRaw, qp.moisture) !== '-' || (qp as any).dryMoistureRaw != null || (qp as any).dryMoisture != null) ? (
                                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
@@ -680,21 +735,17 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', verticalAlign: 'middle', fontSize: '11px', textAlign: 'center' }}>
                                       {/^\d+$/.test(String(entry.packaging || '26')) ? `${entry.packaging || '26'} Kg` : entry.packaging || '26'}
                                     </td>
-                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                       <button
-                                         type="button"
-                                         onClick={() => openEntryDetail(entry)}
-                                         style={{ background: 'transparent', border: 'none', color: '#1565c0', textDecoration: 'underline', cursor: 'pointer', fontWeight: '700', fontSize: '12px', padding: 0, textAlign: 'left' }}
-                                       >
-                                         {toTitleCase(entry.partyName) || ''}
-                                       </button>
-                                     </td>
+                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: '700', color: '#1f2937' }}>
+                                        {entry.entryType === 'DIRECT_LOADED_VEHICLE' && !entry.partyName?.trim() && entry.lorryNumber
+                                          ? entry.lorryNumber.toUpperCase()
+                                          : (toTitleCase(entry.partyName) || (entry.lorryNumber?.toUpperCase() || ''))}
+                                      </td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(entry.location) || '-'}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(entry.variety)}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'left', verticalAlign: 'middle', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                       {renderCollectedBy(entry)}
                                     </td>
-                                    <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'center', verticalAlign: 'middle', fontSize: '12px', color: '#000' }}>{qp?.grainsCountRaw != null && String(qp?.grainsCountRaw).trim() !== '' ? `(${fmtWhole(qp.grainsCountRaw, qp.grainsCount)})` : (qp?.grainsCount != null && qp?.grainsCount !== '' ? `(${fmtWhole(null, qp.grainsCount)})` : fallback)}</td>
+                                    <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'center', verticalAlign: 'middle', fontSize: '12px', color: '#000' }}>{qp?.grainsCountRaw != null && String(qp?.grainsCountRaw).trim() !== '' ? `(${fmtWhole(qp.grainsCountRaw, qp.grainsCount)})` : (qp?.grainsCount != null && String(qp?.grainsCount).trim() !== '' ? `(${fmtWhole(null, qp.grainsCount)})` : fallback)}</td>
                                     <td style={{ border: '1px solid #000', padding: '2px 3px', textAlign: 'center', verticalAlign: 'middle', fontSize: '11px', fontWeight: '600' }}>
                                       {qp && (fmtVal(qp.moistureRaw, qp.moisture) !== fallback || (qp as any).dryMoistureRaw != null || (qp as any).dryMoisture != null) ? (
                                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
@@ -794,12 +845,16 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '2px 2px', textAlign: 'center', verticalAlign: 'middle' }}>
                                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px', justifyContent: 'center' }}>
-                                        {!isResampleRow && (
+                                        {isResampleRow ? (
+                                          <button onClick={() => handleDecision(entry.id, 'PASS_WITH_COOKING')} disabled={isSubmitting} style={{ fontSize: '10px', padding: '4px 6px', backgroundColor: isSubmitting ? '#e0e0e0' : '#28a745', color: isSubmitting ? '#999' : 'white', border: 'none', borderRadius: '4px', cursor: isSubmitting ? 'not-allowed' : 'pointer', fontWeight: '800', width: '48%', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }}>
+                                            {isSubmitting ? '...' : '🍲 Pass'}
+                                          </button>
+                                        ) : (
                                           <button onClick={() => handleDecision(entry.id, 'PASS_WITHOUT_COOKING')} disabled={isSubmitting} style={{ fontSize: '10px', padding: '4px 6px', backgroundColor: isSubmitting ? '#e0e0e0' : '#28a745', color: isSubmitting ? '#999' : 'white', border: 'none', borderRadius: '4px', cursor: isSubmitting ? 'not-allowed' : 'pointer', fontWeight: '800', width: '48%', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }}>
                                             {isSubmitting ? '...' : 'Pass'}
                                           </button>
                                         )}
-                                        <button onClick={() => handleDecision(entry.id, 'FAIL')} disabled={isSubmitting} style={{ fontSize: '10px', padding: '4px 6px', backgroundColor: isSubmitting ? '#e0e0e0' : '#d9534f', color: isSubmitting ? '#999' : 'white', border: 'none', borderRadius: '4px', cursor: isSubmitting ? 'not-allowed' : 'pointer', fontWeight: '800', width: isResampleRow ? '100%' : '48%', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
+                                        <button onClick={() => handleDecision(entry.id, 'FAIL')} disabled={isSubmitting} style={{ fontSize: '10px', padding: '4px 6px', backgroundColor: isSubmitting ? '#e0e0e0' : '#d9534f', color: isSubmitting ? '#999' : 'white', border: 'none', borderRadius: '4px', cursor: isSubmitting ? 'not-allowed' : 'pointer', fontWeight: '800', width: '48%', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
                                           {isSubmitting ? '...' : 'Fail'}
                                         </button>
                                         <button onClick={() => handleDecision(entry.id, 'SOLDOUT')} disabled={isSubmitting} style={{ fontSize: '10px', padding: '4px 6px', backgroundColor: isSubmitting ? '#e0e0e0' : '#800000', color: isSubmitting ? '#999' : 'white', border: 'none', borderRadius: '4px', cursor: isSubmitting ? 'not-allowed' : 'pointer', fontWeight: '800', width: '100%', marginTop: '2px', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
@@ -975,88 +1030,117 @@ const LotSelection: React.FC<LotSelectionProps> = ({ entryType, excludeEntryType
                     if (num === 3) return '3rd Sample';
                     return `${num}th Sample`;
                   };
-                  if (qpList.length > 1) {
-                    const getCellValue = (qp: any, key: string) => {
-                      if (key === 'reportedBy') return qp?.reportedBy ? toSentenceCase(qp.reportedBy) : '--';
-                      if (key === 'moisture') {
-                        const dryVal = fmt((qp as any).dryMoistureRaw, (qp as any).dryMoisture, false, 2);
-                        const moistureVal = fmt((qp as any).moistureRaw, qp.moisture, false, 2);
-                        if (!dryVal && !moistureVal) return '--';
-                        return dryVal ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px' }}>
-                            <span style={{ color: '#e67e22', fontWeight: '800', fontSize: '11px' }}>{dryVal}%</span>
-                            <span>{moistureVal}%</span>
-                          </div>
-                        ) : `${moistureVal}%`;
-                      }
-                      if (key === 'cutting') {
-                        const first = fmt((qp as any).cutting1Raw, qp.cutting1);
-                        const second = fmt((qp as any).cutting2Raw, qp.cutting2);
-                        return first && second ? `${first}x${second}` : '--';
-                      }
-                      if (key === 'bend') {
-                        const first = fmt((qp as any).bend1Raw, qp.bend1);
-                        const second = fmt((qp as any).bend2Raw, qp.bend2);
-                        return first && second ? `${first}x${second}` : '--';
-                      }
-                      if (key === 'grainsCount') return fmtB((qp as any).grainsCountRaw, qp.grainsCount, true, true) || '--';
-                      if (key === 'mix') return fmtB((qp as any).mixRaw, qp.mix) || '--';
-                      if (key === 'mixS') return fmtB((qp as any).mixSRaw, qp.mixS) || '--';
-                      if (key === 'mixL') return fmtB((qp as any).mixLRaw, qp.mixL) || '--';
-                      if (key === 'kandu') return fmtB((qp as any).kanduRaw, qp.kandu) || '--';
-                      if (key === 'oil') return fmtB((qp as any).oilRaw, qp.oil) || '--';
-                      if (key === 'sk') return fmtB((qp as any).skRaw, qp.sk) || '--';
-                      if (key === 'wbR') return fmtB((qp as any).wbRRaw, qp.wbR) || '--';
-                      if (key === 'wbBk') return fmtB((qp as any).wbBkRaw, qp.wbBk) || '--';
-                      if (key === 'wbT') return fmtB((qp as any).wbTRaw, qp.wbT) || '--';
-                      if (key === 'paddyWb') return fmtB((qp as any).paddyWbRaw, qp.paddyWb) || '--';
-                      return '--';
+                  const hasCookingHistory = Array.isArray((detailEntry as any).cookingReport?.history)
+                    ? (detailEntry as any).cookingReport.history.filter(Boolean).length > 0
+                    : Boolean((detailEntry as any).cookingReport?.status || (detailEntry as any).cookingReport?.remarks);
+                  if (hasCookingHistory) {
+                    const buildAttemptRows = (qp: any) => {
+                      const smixOn = isEnabled((qp as any).smixEnabled, (qp as any).mixSRaw, qp.mixS);
+                      const lmixOn = isEnabled((qp as any).lmixEnabled, (qp as any).mixLRaw, qp.mixL);
+                      const paddyOn = isEnabled((qp as any).paddyWbEnabled, (qp as any).paddyWbRaw, qp.paddyWb);
+                      const wbOn = isProvided((qp as any).wbRRaw, qp.wbR) || isProvided((qp as any).wbBkRaw, qp.wbBk);
+                      const smellHasVal = (qp as any).smellHas ?? (detailEntry as any).smellHas;
+                      const smellTypeVal = (qp as any).smellType ?? (detailEntry as any).smellType;
+                      return [
+                        [
+                          { label: 'Sample Collected By', value: toSentenceCase(qp.sampleCollectedBy || detailEntry.sampleCollectedBy || '-'), span: 2 },
+                          { label: 'Sample Reported By', value: toSentenceCase(qp.reportedBy || '-'), span: 2 },
+                          { label: 'Reported At', value: formatDateTime(qp.updatedAt || qp.createdAt || null), span: 2 },
+                          { label: 'Moisture', value: (() => {
+                            const dryVal = fmt((qp as any).dryMoistureRaw, (qp as any).dryMoisture, false, 2);
+                            const moistureVal = fmt((qp as any).moistureRaw, qp.moisture, false, 2);
+                            if (!dryVal && !moistureVal) return '--';
+                            return dryVal ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px' }}>
+                                <span style={{ color: '#e67e22', fontWeight: '800', fontSize: '11px' }}>{dryVal}%</span>
+                                <span>{moistureVal}%</span>
+                              </div>
+                            ) : `${moistureVal}%`;
+                          })() },
+                          { label: 'Cutting', value: (() => {
+                            const first = fmt((qp as any).cutting1Raw, qp.cutting1);
+                            const second = fmt((qp as any).cutting2Raw, qp.cutting2);
+                            return first && second ? `${first}x${second}` : '--';
+                          })() },
+                          { label: 'Bend', value: (() => {
+                            const first = fmt((qp as any).bend1Raw, qp.bend1);
+                            const second = fmt((qp as any).bend2Raw, qp.bend2);
+                            return first && second ? `${first}x${second}` : '--';
+                          })() }
+                        ],
+                        [
+                          { label: 'Grains Count', value: fmtB((qp as any).grainsCountRaw, qp.grainsCount, true, true) || '--' },
+                          { label: 'Mix', value: fmtB((qp as any).mixRaw, qp.mix) || '--' },
+                          ...(smixOn ? [{ label: 'S Mix', value: fmtB((qp as any).mixSRaw, qp.mixS) || '--' }] : []),
+                          ...(lmixOn ? [{ label: 'L Mix', value: fmtB((qp as any).mixLRaw, qp.mixL) || '--' }] : []),
+                          { label: 'Kandu', value: fmtB((qp as any).kanduRaw, qp.kandu) || '--' }
+                        ],
+                        [
+                          { label: 'Oil', value: fmtB((qp as any).oilRaw, qp.oil) || '--' },
+                          { label: 'SK', value: fmtB((qp as any).skRaw, qp.sk) || '--' },
+                          ...(wbOn ? [{ label: 'WB-R', value: fmtB((qp as any).wbRRaw, qp.wbR) || '--' }] : []),
+                          ...(wbOn ? [{ label: 'WB-BK', value: fmtB((qp as any).wbBkRaw, qp.wbBk) || '--' }] : []),
+                          { label: 'WB-T', value: fmtB((qp as any).wbTRaw, qp.wbT) || '--' }
+                        ],
+                        paddyOn ? [{ label: 'Paddy WB', value: fmtB((qp as any).paddyWbRaw, qp.paddyWb) || '--', span: 'full' as const }] : [],
+                        smellHasVal || (smellTypeVal && String(smellTypeVal).trim())
+                          ? [{ label: 'Smell', value: toSentenceCase(smellTypeVal || 'Yes'), span: 'full' as const }]
+                          : []
+                      ];
                     };
-                    const columns = [
-                      { key: 'reportedBy', label: 'Sample Reported By' },
-                      { key: 'moisture', label: 'Moisture' },
-                      { key: 'cutting', label: 'Cutting' },
-                      { key: 'bend', label: 'Bend' },
-                      { key: 'grainsCount', label: 'Grains Count' },
-                      { key: 'mix', label: 'Mix' },
-                      { key: 'mixS', label: 'S Mix' },
-                      { key: 'mixL', label: 'L Mix' },
-                      { key: 'kandu', label: 'Kandu' },
-                      { key: 'oil', label: 'Oil' },
-                      { key: 'sk', label: 'SK' },
-                      { key: 'wbR', label: 'WB-R' },
-                      { key: 'wbBk', label: 'WB-BK' },
-                      { key: 'wbT', label: 'WB-T' },
-                      { key: 'paddyWb', label: 'Paddy WB' }
-                    ];
                     return (
-                      <div style={{ overflowX: 'auto', width: '100%' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1200px', background: '#fff' }}>
-                          <thead>
-                            <tr>
-                              <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', width: '120px' }} />
-                              {columns.map((column) => (
-                                <th key={column.key} style={{ textAlign: 'center', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', fontSize: '11px', color: '#64748b', fontWeight: '700', whiteSpace: 'nowrap' }}>
-                                  {column.label}
-                                </th>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                        {qpList.map((qp: any, idx: number) => (
+                          <div key={`attempt-${idx}`} style={{ display: 'grid', gridTemplateColumns: '190px minmax(0, 1fr)', gap: '20px', alignItems: 'start' }}>
+                            <div style={{
+                              border: '1px solid #ffb25b',
+                              borderRadius: '14px',
+                              background: '#fff8ee',
+                              color: '#a94400',
+                              fontWeight: '800',
+                              fontSize: '20px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              minHeight: '96px'
+                            }}>
+                              {getAttemptLabel(qp?.attemptNo, idx)}
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                              {buildAttemptRows(qp).map((row, rowIdx) => (
+                                row.length > 0 ? (
+                                  <div
+                                    key={`${qp.attemptNo || idx}-row-${rowIdx}`}
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: row.some((item: any) => item.span === 'full')
+                                        ? 'minmax(0, 1fr)'
+                                        : rowIdx === 0
+                                          ? 'repeat(9, minmax(0, 1fr))'
+                                          : `repeat(${row.length}, minmax(0, 1fr))`,
+                                      gap: '14px'
+                                    }}
+                                  >
+                                    {row.map((item: any, cardIdx: number) => (
+                                      <div
+                                        key={`${qp.attemptNo || idx}-${item.label}-${cardIdx}`}
+                                        style={{
+                                          gridColumn: rowIdx === 0
+                                            ? `span ${item.span || 1}`
+                                            : item.span === 'full'
+                                              ? '1 / -1'
+                                              : undefined
+                                        }}
+                                      >
+                                        <QItem label={item.label} value={item.value} />
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null
                               ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {qpList.map((qp: any, idx: number) => (
-                              <tr key={`attempt-${idx}`} style={{ borderBottom: '1px solid #edf2f7' }}>
-                                <td style={{ padding: '10px', fontWeight: '800', color: '#111827', whiteSpace: 'nowrap' }}>
-                                  {getAttemptLabel(qp?.attemptNo, idx)}
-                                </td>
-                                {columns.map((column) => (
-                                  <td key={`${column.key}-${idx}`} style={{ padding: '10px', textAlign: 'center', fontSize: '12px', color: '#1f2937', fontWeight: '600', whiteSpace: 'nowrap' }}>
-                                    {getCellValue(qp, column.key)}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     );
                   }

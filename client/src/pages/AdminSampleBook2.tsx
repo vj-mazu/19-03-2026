@@ -159,6 +159,16 @@ const getPartyLabel = (entry: SampleEntry) => {
 const getPartyDisplayParts = (entry: SampleEntry) => {
     const partyNameText = toTitleCase(entry.partyName || '').trim();
     const lorryText = entry.lorryNumber ? entry.lorryNumber.toUpperCase() : '';
+    
+    // FIXED: For DIRECT_LOADED_VEHICLE with empty partyName, use lorryNumber as primary label
+    if (entry.entryType === 'DIRECT_LOADED_VEHICLE' && !partyNameText && lorryText) {
+        return {
+            label: lorryText,
+            lorryText,
+            showLorrySecondLine: false
+        };
+    }
+    
     return {
         label: partyNameText || lorryText || '-',
         lorryText,
@@ -251,25 +261,14 @@ const getSamplingLabel = (attemptNo: number) => {
     return `${attemptNo}th`;
 };
 const getQualityAttemptsForEntry = (entry: any) => {
-    const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
-        ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
-        : [];
-    const currentQuality = entry?.qualityParameters;
-
-    if (!currentQuality) return baseAttempts;
-    if (baseAttempts.length === 0) return [currentQuality];
-
-    const latestStoredAttempt = baseAttempts[baseAttempts.length - 1];
-    const isResampleFlow = String(entry?.lotSelectionDecision || '').toUpperCase() === 'FAIL'
-        || String(entry?.lotSelectionDecision || '').toUpperCase() === 'PASS_WITH_COOKING'
-        || baseAttempts.length > 1
-        || (Number(entry?.qualityReportAttempts) > 1);
     const getAttemptFingerprint = (attempt: any) => ([
         attempt?.reportedBy ?? '',
         attempt?.moistureRaw ?? attempt?.moisture ?? '',
         attempt?.grainsCountRaw ?? attempt?.grainsCount ?? '',
         attempt?.cutting1Raw ?? attempt?.cutting1 ?? '',
+        attempt?.cutting2Raw ?? attempt?.cutting2 ?? '',
         attempt?.bend1Raw ?? attempt?.bend1 ?? '',
+        attempt?.bend2Raw ?? attempt?.bend2 ?? '',
         attempt?.mixRaw ?? attempt?.mix ?? '',
         attempt?.mixSRaw ?? attempt?.mixS ?? '',
         attempt?.mixLRaw ?? attempt?.mixL ?? '',
@@ -283,21 +282,39 @@ const getQualityAttemptsForEntry = (entry: any) => {
         attempt?.smellHas ?? '',
         attempt?.smellType ?? ''
     ].map((value) => String(value ?? '').trim()).join('|'));
-    const currentAlreadyIncluded = baseAttempts.some((a: any) =>
-        (a.id && currentQuality.id && String(a.id) === String(currentQuality.id))
-        || getAttemptFingerprint(a) === getAttemptFingerprint(currentQuality)
-    );
-    const shouldAppendCurrentQuality = isResampleFlow && !currentAlreadyIncluded;
 
-    if (!shouldAppendCurrentQuality) return baseAttempts;
-
-    return [
-        ...baseAttempts,
-        {
-            ...currentQuality,
-            attemptNo: Math.max(...baseAttempts.map((attempt: any) => Number(attempt.attemptNo) || 0), 1) + 1
+    const baseAttempts = Array.isArray(entry?.qualityAttemptDetails)
+        ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a: any, b: any) => (a.attemptNo || 0) - (b.attemptNo || 0))
+        : [];
+    const normalizedBaseAttempts = baseAttempts.reduce((acc: any[], attempt: any) => {
+        const previous = acc[acc.length - 1];
+        if (!previous) {
+            acc.push(attempt);
+            return acc;
         }
-    ];
+
+        const sameAttemptNo = Number(previous?.attemptNo || 0) === Number(attempt?.attemptNo || 0);
+        const sameFingerprint = getAttemptFingerprint(previous) === getAttemptFingerprint(attempt);
+
+        if (sameAttemptNo && sameFingerprint) {
+            acc[acc.length - 1] = { ...previous, ...attempt };
+            return acc;
+        }
+
+        acc.push(attempt);
+        return acc;
+    }, []);
+    const currentQuality = entry?.qualityParameters;
+
+    if (normalizedBaseAttempts.length > 0) {
+        return normalizedBaseAttempts.map((attempt: any, index: number) => ({
+            ...attempt,
+            attemptNo: Number(attempt?.attemptNo) || index + 1
+        }));
+    }
+
+    if (!currentQuality || !hasQualitySnapshot(currentQuality)) return [];
+    return [{ ...currentQuality, attemptNo: 1 }];
 };
 
 interface AdminSampleBook2Props {
@@ -342,6 +359,29 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
     const [pricingDetail, setPricingDetail] = useState<PricingDetailState | null>(null);
     const [remarksPopup, setRemarksPopup] = useState<{ isOpen: boolean; text: string }>({ isOpen: false, text: '' });
     const [recheckModal, setRecheckModal] = useState<{ isOpen: boolean; entry: SampleEntry | null }>({ isOpen: false, entry: null });
+    const renderTabBadge = (count: number, background: string) => (
+        count > 0 ? (
+            <span
+                style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minWidth: '18px',
+                    height: '18px',
+                    marginLeft: '6px',
+                    padding: '0 6px',
+                    borderRadius: '999px',
+                    background,
+                    color: '#fff',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    lineHeight: 1
+                }}
+            >
+                {count}
+            </span>
+        ) : null
+    );
     const getCollectorLabel = (value?: string | null) => {
         const raw = typeof value === 'string' ? value.trim() : '';
         if (!raw) return '-';
@@ -354,6 +394,27 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
         const creator = (entry as any)?.creator;
         const raw = creator?.fullName || creator?.username || '';
         return raw ? toTitleCase(raw) : '-';
+    };
+    const getCollectedByDisplay = (entry: SampleEntry) => {
+        const creatorLabel = getCreatorLabel(entry);
+        const fallbackCollector = [
+            entry.sampleCollectedBy,
+            ...(((entry as any)?.resampleCollectedHistory || []) as string[]),
+            ...(((entry as any)?.sampleCollectedHistory || []) as string[])
+        ].find((value) => typeof value === 'string' && value.trim() !== '');
+        const collectorLabel = getCollectorLabel(fallbackCollector || null);
+        const isResample = String((entry as any)?.lotSelectionDecision || '').toUpperCase() === 'FAIL' || Boolean((entry as any)?.resampledLotId);
+        const isGivenToOffice = Boolean((entry as any)?.sampleGivenToOffice) || isResample;
+        if (isGivenToOffice) {
+            const primary = creatorLabel !== '-' ? creatorLabel : collectorLabel;
+            const secondary = collectorLabel !== '-' && collectorLabel !== primary ? collectorLabel : null;
+            return { primary, secondary, highlightPrimary: true };
+        }
+        return {
+            primary: collectorLabel !== '-' ? collectorLabel : creatorLabel,
+            secondary: null,
+            highlightPrimary: false
+        };
     };
 
     const handleRecheck = async (type: string) => {
@@ -604,6 +665,7 @@ const AdminSampleBook2: React.FC<AdminSampleBook2Props> = ({ entryType, excludeE
 
     const getStatusStyle = (label: string) => {
         if (label === 'Pass') return { bg: '#a5d6a7', color: '#1b5e20' };
+        if (label === 'Pass Without Cooking') return { bg: '#e3f2fd', color: '#1565c0' };
         if (label === 'Medium') return { bg: '#ffe0b2', color: '#f39c12' };
         if (label === 'Fail') return { bg: '#ffcdd2', color: '#b71c1c' };
         if (label === 'Recheck' || label === 'Rechecking') return { bg: '#e3f2fd', color: '#1565c0' };
@@ -629,15 +691,33 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
         const hasCookingHistory = buildCookingStatusRows(entry).length > 0;
         const isCookingDrivenResample = String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL' && hasCookingHistory;
         const hasCurrentResampleQuality = attemptsSorted.length > 1;
+        
+        // FIXED: Check if resample quality is complete (has all required fields)
+        const hasCompleteResampleQuality = hasCurrentResampleQuality && attemptsSorted.length >= 2 && (() => {
+            const latestAttempt = attemptsSorted[attemptsSorted.length - 1];
+            return isProvidedNumeric((latestAttempt as any).moistureRaw, latestAttempt.moisture)
+                && isProvidedNumeric((latestAttempt as any).grainsCountRaw, latestAttempt.grainsCount)
+                && (
+                    isProvidedNumeric((latestAttempt as any).cutting1Raw, latestAttempt.cutting1)
+                    || isProvidedNumeric((latestAttempt as any).bend1Raw, latestAttempt.bend1)
+                    || isProvidedAlpha((latestAttempt as any).mixRaw, latestAttempt.mix)
+                    || isProvidedAlpha((latestAttempt as any).mixSRaw, latestAttempt.mixS)
+                    || isProvidedAlpha((latestAttempt as any).mixLRaw, latestAttempt.mixL)
+                );
+        })();
+        
         const rows = attemptsSorted.map((attempt: any, idx: number) => {
             const isLast = idx === attemptsSorted.length - 1;
             let status = mapQualityDecisionToStatus(entry.lotSelectionDecision);
 
-            if (isFailDecision) {
+            // LINE-WISE logic: 1st attempt stays Pass, only the failed attempt shows Fail
+            if (isHardFailed && attemptsSorted.length > 1) {
+                status = isLast ? 'Fail' : 'Pass';
+            } else if (isFailDecision) {
                 if (attemptsSorted.length <= 1) {
                     status = 'Pass';
                 } else {
-                    status = isLast ? (isHardFailed ? 'Fail' : 'Pending') : 'Pass';
+                    status = isLast ? 'Pending' : 'Pass';
                 }
             } else if (isLast && isQualityRecheckPending && !isCookingOnlyRecheck) {
                 status = mapQualityDecisionToStatus(previousDecision || entry.lotSelectionDecision);
@@ -661,11 +741,18 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
             return [];
         }
 
+        // FIXED: Show resample status correctly
+        // If FAIL decision and no resample quality yet, show "Pending/Resampling"
         if (isFailDecision && !hasCurrentResampleQuality) {
             rows.push({ type: 'Pending', status: 'Resampling' });
-        } else if (isFailDecision && hasCurrentResampleQuality && rows.length === 1) {
+        } 
+        // If FAIL decision and resample quality exists but only 1 row (shouldn't happen but handle it)
+        else if (isFailDecision && hasCurrentResampleQuality && rows.length === 1) {
             rows.unshift({ type: 'Done', status: 'Pass' });
-        } else if (isQualityRecheckPending && !isCookingOnlyRecheck) {
+        }
+        // If FAIL decision and resample quality is complete, don't add extra row (it's already in rows)
+        // The entry should now show in "Resample Pending" with the latest quality status
+        else if (isQualityRecheckPending && !isCookingOnlyRecheck) {
             rows.push({ type: 'Recheck', status: 'Rechecking' });
         } else if (isCookingDrivenResample && !hasCurrentResampleQuality && attemptsSorted.length <= 1 && String(entry.workflowStatus || '').toUpperCase() !== 'FAILED') {
             rows.push({ type: 'Pending', status: 'Resampling' });
@@ -766,11 +853,20 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
         }
 
         const rows = buildCookingStatusRows(entry);
-        if (rows.length === 0) return null;
+        const qualityAttempts = getQualityAttemptsForEntry(entry);
+        const shouldPrefixPassWithoutCooking =
+            String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL'
+            && qualityAttempts.length > 1
+            && rows.length === 1
+            && rows[0]?.status !== 'Pass Without Cooking';
+        const displayRows = shouldPrefixPassWithoutCooking
+            ? [{ status: 'Pass Without Cooking', remarks: '', doneBy: '', doneDate: null, approvedBy: '', approvedDate: null }, ...rows]
+            : rows;
+        if (displayRows.length === 0) return null;
 
         return (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3px', width: '100%' }}>
-                {rows.map((row, idx) => {
+                {displayRows.map((row, idx) => {
                     const style = getStatusStyle(row.status);
                     return (
                         <div key={`${entry.id}-cook-status-${idx}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', width: '100%' }}>
@@ -838,7 +934,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
     const getWorkflowStatusMeta = (status?: string | null) => {
         const key = String(status || '').trim().toUpperCase();
         const colors: Record<string, { bg: string; color: string; label: string }> = {
-            STAFF_ENTRY: { bg: '#e3f2fd', color: '#1565c0', label: 'Sample Entry Done' },
+            STAFF_ENTRY: { bg: '#fff8e1', color: '#f57f17', label: 'Pending' },
             QUALITY_CHECK: { bg: '#fff8e1', color: '#e65100', label: 'Pending' },
             LOT_SELECTION: { bg: '#fff8e1', color: '#f57f17', label: 'Pending' },
             COOKING_REPORT: { bg: '#fff8e1', color: '#f57f17', label: 'Pending' },
@@ -1030,7 +1126,8 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                     onClick={() => setActiveView('edit-approvals')}
                     style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: '700', fontSize: '13px', background: activeView === 'edit-approvals' ? '#7c3aed' : '#cbd5e1', color: activeView === 'edit-approvals' ? '#fff' : '#1e293b' }}
                 >
-                    Approval For Edit {approvalEntries.length > 0 ? `(${approvalEntries.length})` : ''}
+                    Approval For Edit
+                    {renderTabBadge(approvalEntries.length, '#6d28d9')}
                 </button>
             </div>
             {/* Filter Bar */}
@@ -1101,11 +1198,11 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                     ) : approvalEntries.length === 0 ? (
                         <div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>No edit approvals pending</div>
                     ) : (
-                        <table style={{ width: '100%', minWidth: '1250px', borderCollapse: 'collapse' }}>
+                        <table style={{ width: '100%', minWidth: '1100px', borderCollapse: 'collapse' }}>
                             <thead>
                                 <tr style={{ background: '#1f2a44', color: '#fff' }}>
                                     {['Sl No', 'Type', 'Bags', 'Pkg', 'Party Name', 'Paddy Location', 'Variety', 'Request', 'Reason', 'Requested By', 'Requested At', 'Action'].map((header) => (
-                                        <th key={header} style={{ border: '1px solid #000', padding: '8px 10px', fontSize: '12px', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>{header}</th>
+                                        <th key={header} style={{ border: '1px solid #000', padding: '8px 10px', fontSize: '12px', whiteSpace: 'nowrap', textAlign: 'left', verticalAlign: 'middle' }}>{header}</th>
                                     ))}
                                 </tr>
                             </thead>
@@ -1113,7 +1210,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                 {approvalEntries.map((entry, index) => {
                                     const entryPending = String(entry.entryEditApprovalStatus || '').toLowerCase() === 'pending';
                                     const qualityPending = String(entry.qualityEditApprovalStatus || '').toLowerCase() === 'pending';
-                                    const requestType = qualityPending ? 'Quality Edit' : 'Entry Edit';
+                                    const requestType = qualityPending ? 'Request For Quality Parameters' : 'Request For Sample Entry';
                                     const requestReason = qualityPending ? (entry.qualityEditApprovalReason || '-') : (entry.entryEditApprovalReason || '-');
                                     const requestedBy = qualityPending ? (entry.qualityEditApprovalRequestedByName || getCreatorLabel(entry)) : (entry.entryEditApprovalRequestedByName || getCreatorLabel(entry));
                                     const requestedAt = qualityPending ? entry.qualityEditApprovalRequestedAt : entry.entryEditApprovalRequestedAt;
@@ -1140,8 +1237,8 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                             </td>
                                             <td style={{ border: '1px solid #000', padding: '8px 10px', verticalAlign: 'middle' }}>{toTitleCase(entry.location || '-')}</td>
                                             <td style={{ border: '1px solid #000', padding: '8px 10px', verticalAlign: 'middle' }}>{toTitleCase(entry.variety || '-')}</td>
-                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle', fontWeight: '700', color: '#7c3aed' }}>{requestType}</td>
-                                            <td style={{ border: '1px solid #000', padding: '8px 10px', minWidth: '220px', verticalAlign: 'middle', lineHeight: 1.4 }}>{requestReason}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'left', verticalAlign: 'middle', fontWeight: '700', color: '#7c3aed', minWidth: '170px' }}>{requestType}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px 10px', minWidth: '180px', verticalAlign: 'middle', lineHeight: 1.4 }}>{requestReason}</td>
                                             <td style={{ border: '1px solid #000', padding: '8px 10px', verticalAlign: 'middle' }}>{requestedBy}</td>
                                             <td style={{ border: '1px solid #000', padding: '8px 10px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{formatShortDateTime(requestedAt || null) || '-'}</td>
                                             <td style={{ border: '1px solid #000', padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle' }}>
@@ -1307,7 +1404,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                                                 <td style={{ border: '1px solid #000', padding: '3px 4px', fontSize: '13px', textAlign: 'left', whiteSpace: 'nowrap' }}>
                                                                     {(entry as any).sampleGivenToOffice ? (
                                                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                                                            <span style={{ fontWeight: '700', color: '#ff9800', fontSize: '13px' }}>{getCreatorLabel(entry)}</span>
+                                                                            <span style={{ fontWeight: '700', color: '#9c27b0', fontSize: '13px' }}>{getCreatorLabel(entry)}</span>
                                                                             <span style={{ fontWeight: '600', color: '#333', fontSize: '12px' }}>{getCollectorLabel(entry.sampleCollectedBy || '-')}</span>
                                                                         </div>
                                                                     ) : (
@@ -1416,10 +1513,26 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
 
             {/* Detail Popup — same design as AdminSampleBook */}
             {
-                detailEntry && (
+                detailEntry && (() => {
+                    const detailOff = detailEntry.offering;
+                    const detailOfferVersions = detailOff?.offerVersions || [];
+                    const detailHasPricingSummary = Boolean(
+                        detailOff?.finalPrice
+                        || detailOff?.finalBaseRate
+                        || detailOff?.offerBaseRateValue
+                        || detailOff?.offeringPrice
+                        || detailOfferVersions.length > 0
+                    );
+                    const detailHasCookingHistory = buildCookingStatusRows(detailEntry).length > 0;
+                    const useCompactDetailShell = detailMode !== 'history'
+                        && !detailHasCookingHistory
+                        && !detailHasPricingSummary
+                        && getQualityAttemptsForEntry(detailEntry as any).length <= 1;
+                    const useWideSummaryLayout = detailMode === 'history' || detailHasCookingHistory || detailHasPricingSummary;
+                    return (
                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, padding: '20px 16px' }}
                         onClick={() => setDetailEntry(null)}>
-                        <div style={{ backgroundColor: 'white', borderRadius: '8px', width: detailMode === 'history' ? '85vw' : '94vw', maxWidth: detailMode === 'history' ? '88vw' : '1180px', maxHeight: detailMode === 'history' ? '82vh' : '88vh', overflowY: 'auto', overflowX: detailMode === 'history' ? 'auto' : 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}
+                        <div style={{ backgroundColor: 'white', borderRadius: '8px', width: detailMode === 'history' ? '85vw' : (useCompactDetailShell ? 'min(520px, 95vw)' : '94vw'), maxWidth: detailMode === 'history' ? '88vw' : (useCompactDetailShell ? '95vw' : '1180px'), maxHeight: detailMode === 'history' ? '82vh' : '88vh', overflowY: 'auto', overflowX: detailMode === 'history' ? 'auto' : 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}
                             onClick={e => e.stopPropagation()}>
                             {/* Redesigned Header — Green Background, Aligned Items */}
                             <div style={{
@@ -1456,13 +1569,13 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                 }}>✕</button>
                             </div>
                             <div style={{ padding: '24px', backgroundColor: '#fff', borderBottomLeftRadius: '10px', borderBottomRightRadius: '10px', minWidth: detailMode === 'history' ? '1200px' : 'auto', position: 'relative' }}>
-                                {detailMode !== 'history' && (() => {
-                                    const off = detailEntry.offering;
-                                    const versions = off?.offerVersions || [];
+                                {detailMode !== 'history' && !useCompactDetailShell && (() => {
+                                    const off = detailOff;
+                                    const versions = detailOfferVersions;
                                     if (!off && versions.length === 0) return null;
 
                                     return (
-                                        <div style={{ position: 'absolute', top: 24, right: 24, width: 430, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
                                             <h4 style={{ margin: 0, fontSize: '13px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '8px', fontWeight: '900' }}>Pricing & Offers</h4>
                                             {(off?.finalPrice || off?.finalBaseRate) && (
                                                 <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px' }}>
@@ -1472,7 +1585,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                                 </div>
                                             )}
                                             {versions.length > 0 && (
-                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                                     {versions.map((ov, i) => (
                                                         <div key={i} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px', minWidth: 0 }}>
                                                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', gap: '6px' }}>
@@ -1496,7 +1609,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                     );
                                 })()}
                                 {/* Basic Info Grid */}
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px', maxWidth: detailMode === 'history' ? '100%' : 'calc(100% - 450px)' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '16px', maxWidth: '100%' }}>
                                     {[
                                         ['Date', new Date(detailEntry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })],
                                         ['Total Bags', detailEntry.bags?.toLocaleString('en-IN')],
@@ -1509,7 +1622,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                         </div>
                                     ))}
                                 </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '24px', maxWidth: detailMode === 'history' ? '100%' : 'calc(100% - 450px)' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '24px', maxWidth: '100%' }}>
                                     <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                                         <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Party Name</div>
                                         {(() => {
@@ -1530,37 +1643,43 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                     </div>
                                     <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                                         <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Collected By</div>
-                                        {(detailEntry as any).sampleGivenToOffice ? (
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                                <div style={{ fontSize: '14px', fontWeight: '700', color: '#ff9800', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                    {getCreatorLabel(detailEntry)}
+                                        {(() => {
+                                            const collectedByDisplay = getCollectedByDisplay(detailEntry);
+                                            if (collectedByDisplay.secondary) {
+                                                return (
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', overflow: 'hidden' }}>
+                                                        <span style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#9c27b0' : '#1e293b' }}>
+                                                            {collectedByDisplay.primary}
+                                                        </span>
+                                                        <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: '800' }}>/</span>
+                                                        <span style={{ fontSize: '12px', fontWeight: '600', color: '#333', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                            {collectedByDisplay.secondary}
+                                                        </span>
+                                                    </div>
+                                                );
+                                            }
+                                            return (
+                                                <div style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#9c27b0' : '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                    {collectedByDisplay.primary}
                                                 </div>
-                                                <div style={{ fontSize: '13px', fontWeight: '600', color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                    {getCollectorLabel(detailEntry.sampleCollectedBy || '-')}
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {getCollectorLabel(detailEntry.sampleCollectedBy || getCreatorLabel(detailEntry))}
-                                            </div>
-                                        )}
+                                            );
+                                        })()}
                                     </div>
                                     {(() => {
                                         const smellAttempts = Array.isArray((detailEntry as any).qualityAttemptDetails) ? (detailEntry as any).qualityAttemptDetails : [];
                                         const smellAttempt = [...smellAttempts].reverse().find((qp: any) => qp?.smellHas || (qp?.smellType && String(qp.smellType).trim()));
                                         const smellHasValue = smellAttempt?.smellHas ?? (detailEntry as any).smellHas;
                                         const smellTypeValue = smellAttempt?.smellType ?? (detailEntry as any).smellType;
-                                        if (!(smellHasValue || (smellTypeValue && String(smellTypeValue).trim()))) return null;
                                         return (
                                             <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
                                                 <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Smell</div>
-                                                <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{toTitleCase(smellTypeValue || 'Yes')}</div>
+                                                <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(smellHasValue || (smellTypeValue && String(smellTypeValue).trim())) ? toTitleCase(smellTypeValue || 'Yes') : '-'}</div>
                                             </div>
                                         );
                                     })()}
                                 </div>
                                 {/* Horizontal Layout: Quality Parameters / Cooking History */}
-                                <div style={{ display: 'grid', gridTemplateColumns: getQualityAttemptsForEntry(detailEntry as any).length > 1 ? 'minmax(0, 1fr)' : (detailMode === 'history' ? 'repeat(auto-fit, minmax(340px, 1fr))' : 'minmax(0, 1fr) 340px'), gap: '20px', marginTop: '20px', alignItems: 'start' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: getQualityAttemptsForEntry(detailEntry as any).length > 1 ? 'minmax(0, 1fr)' : (useWideSummaryLayout ? (detailMode === 'history' ? 'repeat(auto-fit, minmax(340px, 1fr))' : 'minmax(0, 1fr) 340px') : 'minmax(0, 1fr)'), gap: '20px', marginTop: '20px', alignItems: 'start' }}>
                                     {/* LEFT SIDE: Quality Parameters */}
                                     <div style={{ minWidth: 0 }}>
                                         <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px' }}>🔬 Quality Parameters</h4>
@@ -1624,14 +1743,15 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                     const QItem = ({ label, value }: { label: string; value: React.ReactNode }) => {
                                         const isBold = ['Grains Count', 'Paddy WB'].includes(label);
                                         return (
-                                            <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
-                                                <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>{label}</div>
-                                                <div style={{ fontSize: '13px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
+                                            <div style={{ background: '#f8f9fa', padding: '6px 8px', borderRadius: '6px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
+                                                <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '2px', fontWeight: '600', textTransform: 'uppercase' }}>{label}</div>
+                                                <div style={{ fontSize: '12px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
                                             </div>
                                         );
                                     };
                                     const qualityPhotoUrl = qpList.find((qp: any) => qp?.uploadFileUrl)?.uploadFileUrl;
                                     const hasHistory = qpList.length > 1;
+                                    const useHorizontalQualityHistory = hasHistory;
                                     const getAttemptLabel = (attemptNo: number, idx: number) => {
                                         const num = attemptNo || idx + 1;
                                         if (num === 1) return '1st Sample';
@@ -1640,68 +1760,44 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                         return `${num}th Sample`;
                                     };
 
-                                    if (hasHistory) {
-                                        const columns = [
-                                            { key: 'reportedBy', label: 'Sample Reported By' },
-                                            { key: 'reportedAt', label: 'Reported At' },
-                                            { key: 'moisture', label: 'Moisture' },
-                                            { key: 'cutting', label: 'Cutting' },
-                                            { key: 'bend', label: 'Bend' },
-                                            { key: 'grainsCount', label: 'Grains Count' },
-                                            { key: 'mix', label: 'Mix' },
-                                            { key: 'mixS', label: 'S Mix' },
-                                            { key: 'mixL', label: 'L Mix' },
-                                            { key: 'kandu', label: 'Kandu' },
-                                            { key: 'oil', label: 'Oil' },
-                                            { key: 'sk', label: 'SK' },
-                                            { key: 'wbR', label: 'WB-R' },
-                                            { key: 'wbBk', label: 'WB-BK' },
-                                            { key: 'wbT', label: 'WB-T' },
-                                            { key: 'smell', label: 'Smell' },
-                                            { key: 'paddyWb', label: 'Paddy WB' }
-                                        ];
-
-                                        const getCellValue = (qp: any, key: string) => {
+                                    if (useHorizontalQualityHistory) {
+                                        const buildAttemptRows = (qp: any) => {
                                             const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
                                             const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
                                             const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
                                             const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
-                                            if (key === 'reportedBy') return toTitleCase(qp.reportedBy || '-');
-                                            if (key === 'reportedAt') return formatShortDateTime(qp.updatedAt || qp.createdAt || null) || '-';
-                                            if (key === 'moisture') {
-                                                const val = displayVal(qp.moistureRaw, qp.moisture);
-                                                return val ? `${val}%` : '-';
-                                            }
-                                            if (key === 'smell') {
-                                                const smellHasValue = qp.smellHas ?? (detailEntry as any).smellHas;
-                                                const smellTypeValue = qp.smellType ?? (detailEntry as any).smellType;
-                                                return smellHasValue ? toTitleCase(smellTypeValue || 'Yes') : '-';
-                                            }
-                                            if (key === 'cutting') {
-                                                const cut1 = displayVal(qp.cutting1Raw, qp.cutting1);
-                                                const cut2 = displayVal(qp.cutting2Raw, qp.cutting2);
-                                                return cut1 && cut2 ? `${cut1}x${cut2}` : '-';
-                                            }
-                                            if (key === 'bend') {
-                                                const bend1 = displayVal(qp.bend1Raw, qp.bend1);
-                                                const bend2 = displayVal(qp.bend2Raw, qp.bend2);
-                                                return bend1 && bend2 ? `${bend1}x${bend2}` : '-';
-                                            }
-                                            if (key === 'grainsCount') {
-                                                const val = displayVal(qp.grainsCountRaw, qp.grainsCount);
-                                                return val ? `(${val})` : '-';
-                                            }
-                                            if (key === 'mix') return displayVal(qp.mixRaw, qp.mix) || '-';
-                                            if (key === 'mixS') return displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-';
-                                            if (key === 'mixL') return displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-';
-                                            if (key === 'kandu') return displayVal(qp.kanduRaw, qp.kandu) || '-';
-                                            if (key === 'oil') return displayVal(qp.oilRaw, qp.oil) || '-';
-                                            if (key === 'sk') return displayVal(qp.skRaw, qp.sk) || '-';
-                                            if (key === 'wbR') return displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-';
-                                            if (key === 'wbBk') return displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-';
-                                            if (key === 'wbT') return displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-';
-                                            if (key === 'paddyWb') return displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-';
-                                            return '-';
+                                            const smellHasValue = qp.smellHas ?? (detailEntry as any).smellHas;
+                                            const smellTypeValue = qp.smellType ?? (detailEntry as any).smellType;
+                                            return [
+                                                [
+                                                    { label: 'Sample Collected By', value: toTitleCase(qp.sampleCollectedBy || detailEntry.sampleCollectedBy || '-'), span: 2 },
+                                                    { label: 'Sample Reported By', value: toTitleCase(qp.reportedBy || '-'), span: 2 },
+                                                    { label: 'Reported At', value: formatShortDateTime(qp.updatedAt || qp.createdAt || null) || '-', span: 2 },
+                                                    { label: 'Moisture', value: (() => { const val = displayVal(qp.moistureRaw, qp.moisture); return val ? `${val}%` : '-'; })() },
+                                                    { label: 'Cutting', value: (() => { const cut1 = displayVal(qp.cutting1Raw, qp.cutting1); const cut2 = displayVal(qp.cutting2Raw, qp.cutting2); return cut1 && cut2 ? `${cut1}x${cut2}` : '-'; })() },
+                                                    { label: 'Bend', value: (() => { const bend1 = displayVal(qp.bend1Raw, qp.bend1); const bend2 = displayVal(qp.bend2Raw, qp.bend2); return bend1 && bend2 ? `${bend1}x${bend2}` : '-'; })() }
+                                                ],
+                                                [
+                                                    { label: 'Grains Count', value: (() => { const val = displayVal(qp.grainsCountRaw, qp.grainsCount); return val ? `(${val})` : '-'; })() },
+                                                    { label: 'Mix', value: displayVal(qp.mixRaw, qp.mix) || '-' },
+                                                    { label: 'S Mix', value: displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-' },
+                                                    { label: 'L Mix', value: displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-' },
+                                                    { label: 'Kandu', value: displayVal(qp.kanduRaw, qp.kandu) || '-' }
+                                                ],
+                                                [
+                                                    { label: 'Oil', value: displayVal(qp.oilRaw, qp.oil) || '-' },
+                                                    { label: 'SK', value: displayVal(qp.skRaw, qp.sk) || '-' },
+                                                    { label: 'WB-R', value: displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-' },
+                                                    { label: 'WB-BK', value: displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-' },
+                                                    { label: 'WB-T', value: displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-' }
+                                                ],
+                                                [
+                                                    { label: 'Paddy WB', value: displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-', span: 5 }
+                                                ].filter((item) => item.value && item.value !== '-'),
+                                                [
+                                                    { label: 'Smell', value: smellHasValue ? toTitleCase(smellTypeValue || 'Yes') : '-' }
+                                                ].filter((item) => item.value && item.value !== '-')
+                                            ];
                                         };
 
                                         return (
@@ -1716,32 +1812,26 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                                         />
                                                     </div>
                                                 )}
-                                                <div style={{ overflowX: 'auto', width: '100%' }}>
-                                                    <table style={{ width: '100%', minWidth: '1180px', borderCollapse: 'collapse', fontSize: '11px', tableLayout: 'auto' }}>
-                                                        <thead>
-                                                            <tr>
-                                                                <th style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'left', whiteSpace: 'nowrap' }}>Sample</th>
-                                                                {columns.map(col => (
-                                                                    <th key={col.key} style={{ border: '1px solid #e0e0e0', padding: '6px', background: '#f7f7f7', textAlign: 'center', whiteSpace: 'nowrap' }}>{col.label}</th>
-                                                                ))}
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {qpList.map((qp: any, idx: number) => (
-                                                                <tr key={`${qp.attemptNo || idx}-row`}>
-                                                                    <td style={{ border: '1px solid #e0e0e0', padding: '6px', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                                                                        {getAttemptLabel(qp.attemptNo, idx)}
-                                                                    </td>
-                                                                    {columns.map(col => (
-                                                                        <td key={`${qp.attemptNo || idx}-${col.key}`} style={{ border: '1px solid #e0e0e0', padding: '6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                                                                            {getCellValue(qp, col.key)}
-                                                                        </td>
-                                                                    ))}
-                                                                </tr>
+                                                {qpList.map((qp: any, idx: number) => (
+                                                    <div key={`${qp.attemptNo || idx}-cards`} style={{ display: 'grid', gridTemplateColumns: '160px minmax(0, 1fr)', gap: '16px', alignItems: 'start' }}>
+                                                        <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '10px', minHeight: '76px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: '900', color: '#9a3412' }}>
+                                                            {getAttemptLabel(qp.attemptNo, idx)}
+                                                        </div>
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                                            {buildAttemptRows(qp).map((row, rowIdx) => (
+                                                                row.length > 0 ? (
+                                                                    <div key={`${qp.attemptNo || idx}-row-${rowIdx}`} style={{ display: 'grid', gridTemplateColumns: rowIdx === 0 ? 'repeat(9, minmax(0, 1fr))' : `repeat(${row.length}, minmax(0, 1fr))`, gap: '12px' }}>
+                                                                        {row.map((item, cardIdx) => (
+                                                                            <div key={`${qp.attemptNo || idx}-${item.label}-${cardIdx}`} style={{ gridColumn: rowIdx === 0 ? `span ${item.span || 1}` : undefined }}>
+                                                                                <QItem label={item.label} value={item.value} />
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                ) : null
                                                             ))}
-                                                        </tbody>
-                                                    </table>
-                                                </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
                                             </div>
                                         );
                                     }
@@ -1804,19 +1894,16 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                                 if (hasSK) row3.push({ label: 'SK', value: hasSK });
                                                 
                                                 const row4: { label: string; value: React.ReactNode }[] = [];
+                                                const row5: { label: string; value: React.ReactNode }[] = [];
                                                 const wbRVal = displayVal((qp as any).wbRRaw, qp.wbR, wbOn);
                                                 const wbBkVal = displayVal((qp as any).wbBkRaw, qp.wbBk, wbOn);
                                                 const wbTVal = displayVal((qp as any).wbTRaw, qp.wbT, wbOn);
                                                 if (wbRVal) row4.push({ label: 'WB-R', value: wbRVal });
                                                 if (wbBkVal) row4.push({ label: 'WB-BK', value: wbBkVal });
                                                 if (wbTVal) row4.push({ label: 'WB-T', value: wbTVal });
-                                                const smellHasValue = (qp as any).smellHas ?? (qpList.length === 1 ? (detailEntry as any).smellHas : undefined);
-                                                const smellTypeValue = (qp as any).smellType ?? (qpList.length === 1 ? (detailEntry as any).smellType : undefined);
-                                                if (smellHasValue || (smellTypeValue && String(smellTypeValue).trim())) row4.push({ label: 'Smell', value: toTitleCase(smellTypeValue || 'Yes') });
-                                                
                                                 const hasPaddyWb = displayVal((qp as any).paddyWbRaw, qp.paddyWb, paddyOn);
                                                 if (hasPaddyWb) {
-                                                    row4.push({
+                                                    row5.push({
                                                         label: 'Paddy WB',
                                                         value: (
                                                             <span style={{
@@ -1828,6 +1915,9 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                                         )
                                                     });
                                                 }
+                                                const smellHasValue = (qp as any).smellHas ?? (qpList.length === 1 ? (detailEntry as any).smellHas : undefined);
+                                                const smellTypeValue = (qp as any).smellType ?? (qpList.length === 1 ? (detailEntry as any).smellType : undefined);
+                                                if (smellHasValue || (smellTypeValue && String(smellTypeValue).trim())) row5.push({ label: 'Smell', value: toTitleCase(smellTypeValue || 'Yes') });
                                                 
                                                 const wrapperStyle = qpList.length > 1 ? { background: '#fcfcfc', border: '1px solid #eee', borderRadius: '6px', padding: '12px' } : {};
 
@@ -1846,11 +1936,11 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                                             </div>
                                                         )}
                                                         {row4.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row4.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row4.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                                                        {row5.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row5.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row5.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
                                                         {qp.reportedBy && (
-                                                            <div style={{ marginTop: '8px' }}>
-                                                                <div style={{ background: '#f8f9fa', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e0e0e0', textAlign: 'center' }}>
-                                                                    <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px', fontWeight: '600' }}>Sample Reported By</div>
-                                                                    <div style={{ fontSize: '13px', fontWeight: '700', color: '#2c3e50' }}>{toSentenceCase(qp.reportedBy)}</div>
+                                                            <div style={{ marginTop: '8px', borderTop: '1px dashed #e2e8f0', paddingTop: '6px' }}>
+                                                                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600', textAlign: 'center' }}>
+                                                                    Reported By: <span style={{ color: '#1e293b', fontWeight: '800', fontSize: '13px' }}>{toSentenceCase(qp.reportedBy)}</span>
                                                                 </div>
                                                             </div>
                                                         )}
@@ -1861,6 +1951,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                     );
                                 })()}
                                     </div>
+                                    {useWideSummaryLayout && (
                                     <div style={{ minWidth: 0 }}>
                                         <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#1565c0', borderBottom: '2px solid #1565c0', paddingBottom: '6px' }}>Cooking History & Remarks</h4>
                                         {(() => {
@@ -1922,6 +2013,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                             );
                                         })()}
                                     </div>
+                                    )}
                                 </div>
 
                                 {detailMode === 'history' && (
@@ -2034,7 +2126,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                             </div>
                         </div>
                     </div>
-                )
+                )})()
             }
 
             {pricingDetail && (
@@ -2099,7 +2191,7 @@ const buildQualityStatusRows = (entry: SampleEntry) => {
                                         }
 
                                         return (
-                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '12px' }}>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                                                 {visibleVersions.map((version, versionIndex) => {
                                                     const pricingVersion = pricingDetail.mode === 'offer'
                                                         ? {

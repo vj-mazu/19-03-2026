@@ -126,27 +126,155 @@ const hasAlphaOrPositive = (value) => {
   const raw = String(value).trim();
   if (!raw) return false;
   if (/[a-zA-Z]/.test(raw)) return true;
-  const num = parseFloat(raw);
-  return Number.isFinite(num);
+  const num = Number(raw);
+  return Number.isFinite(num) && num !== 0;
 };
 
 const normalizeGramsReport = (value, fallback = '10gms') => {
   if (value === undefined || value === null || value === '') return fallback;
   return value === '5gms' ? '5gms' : '10gms';
 };
+const isProvidedNumericValue = (rawVal, valueVal) => {
+  const raw = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : '';
+  if (raw !== '') return true;
+  const num = Number(valueVal);
+  return Number.isFinite(num) && num > 0;
+};
+const isProvidedAlphaValue = (rawVal, valueVal) => {
+  const raw = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : '';
+  if (raw !== '') return true;
+  return hasAlphaOrPositive(valueVal);
+};
+const hasQualitySnapshot = (attempt = {}) => {
+  const hasMoisture = isProvidedNumericValue(attempt.moistureRaw, attempt.moisture);
+  const hasGrains = isProvidedNumericValue(attempt.grainsCountRaw, attempt.grainsCount);
+  const hasDetailedQuality =
+    isProvidedNumericValue(attempt.cutting1Raw, attempt.cutting1) ||
+    isProvidedNumericValue(attempt.bend1Raw, attempt.bend1) ||
+    isProvidedAlphaValue(attempt.mixRaw, attempt.mix) ||
+    isProvidedAlphaValue(attempt.mixSRaw, attempt.mixS) ||
+    isProvidedAlphaValue(attempt.mixLRaw, attempt.mixL) ||
+    isProvidedAlphaValue(attempt.kanduRaw, attempt.kandu) ||
+    isProvidedAlphaValue(attempt.oilRaw, attempt.oil) ||
+    isProvidedAlphaValue(attempt.skRaw, attempt.sk);
+
+  return hasMoisture && (hasGrains || hasDetailedQuality);
+};
+const hasAnyDetailedQuality = (attempt = {}) => (
+  isProvidedNumericValue(attempt.cutting1Raw, attempt.cutting1)
+  || isProvidedNumericValue(attempt.cutting2Raw, attempt.cutting2)
+  || isProvidedNumericValue(attempt.bend1Raw, attempt.bend1)
+  || isProvidedNumericValue(attempt.bend2Raw, attempt.bend2)
+  || isProvidedAlphaValue(attempt.mixRaw, attempt.mix)
+  || isProvidedAlphaValue(attempt.mixSRaw, attempt.mixS)
+  || isProvidedAlphaValue(attempt.mixLRaw, attempt.mixL)
+  || isProvidedAlphaValue(attempt.kanduRaw, attempt.kandu)
+  || isProvidedAlphaValue(attempt.oilRaw, attempt.oil)
+  || isProvidedAlphaValue(attempt.skRaw, attempt.sk)
+);
+const hasFullQualitySnapshot = (attempt = {}) => {
+  const hasMoisture = isProvidedNumericValue(attempt.moistureRaw, attempt.moisture);
+  const hasGrains = isProvidedNumericValue(attempt.grainsCountRaw, attempt.grainsCount);
+  return hasMoisture
+    && hasGrains
+    && isProvidedNumericValue(attempt.cutting1Raw, attempt.cutting1)
+    && isProvidedNumericValue(attempt.cutting2Raw, attempt.cutting2)
+    && isProvidedNumericValue(attempt.bend1Raw, attempt.bend1)
+    && isProvidedNumericValue(attempt.bend2Raw, attempt.bend2)
+    && isProvidedAlphaValue(attempt.mixRaw, attempt.mix)
+    && isProvidedAlphaValue(attempt.kanduRaw, attempt.kandu)
+    && isProvidedAlphaValue(attempt.oilRaw, attempt.oil)
+    && isProvidedAlphaValue(attempt.skRaw, attempt.sk);
+};
+const hasSampleBookReadySnapshot = (attempt = {}) => {
+  const hasMoisture = isProvidedNumericValue(attempt.moistureRaw, attempt.moisture);
+  const hasGrains = isProvidedNumericValue(attempt.grainsCountRaw, attempt.grainsCount);
+  if (!hasMoisture || !hasGrains) return false;
+  if (hasFullQualitySnapshot(attempt)) return true;
+  return !hasAnyDetailedQuality(attempt);
+};
+const normalizeAttemptValue = (value = '') => String(value ?? '').trim().toLowerCase();
+const areQualityAttemptsEquivalent = (left = {}, right = {}) => {
+  const fields = [
+    'reportedBy',
+    'moistureRaw', 'moisture',
+    'grainsCountRaw', 'grainsCount',
+    'cutting1Raw', 'cutting1',
+    'cutting2Raw', 'cutting2',
+    'bend1Raw', 'bend1',
+    'bend2Raw', 'bend2',
+    'mixRaw', 'mix',
+    'mixSRaw', 'mixS',
+    'mixLRaw', 'mixL',
+    'kanduRaw', 'kandu',
+    'oilRaw', 'oil',
+    'skRaw', 'sk',
+    'wbRRaw', 'wbR',
+    'wbBkRaw', 'wbBk',
+    'wbTRaw', 'wbT',
+    'paddyWbRaw', 'paddyWb',
+    'smellHas', 'smellType'
+  ];
+  return fields.every((field) => normalizeAttemptValue(left?.[field]) === normalizeAttemptValue(right?.[field]));
+};
+const getQualityAttemptsForEntry = (entry = {}) => {
+  const attempts = Array.isArray(entry.qualityAttemptDetails)
+    ? [...entry.qualityAttemptDetails].filter(Boolean).sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0))
+    : [];
+  const currentQuality = entry.qualityParameters;
+  if (!currentQuality || !hasQualitySnapshot(currentQuality)) {
+    return attempts;
+  }
+  const alreadyIncluded = attempts.some((attempt) => (
+    (attempt.id && currentQuality.id && String(attempt.id) === String(currentQuality.id))
+    || areQualityAttemptsEquivalent(attempt, currentQuality)
+  ));
+  if (alreadyIncluded) {
+    return attempts;
+  }
+  return [
+    ...attempts,
+    {
+      ...currentQuality,
+      attemptNo: attempts.length + 1
+    }
+  ];
+};
+const hasPostResampleSampleBookAttempt = (entry = {}) => {
+  const attempts = getQualityAttemptsForEntry(entry);
+  if (attempts.length <= 1) return false;
+  const latestAttempt = attempts[attempts.length - 1] || null;
+  return !!latestAttempt && hasSampleBookReadySnapshot(latestAttempt);
+};
+const hasAssignedResampleCollector = (entry = {}) => {
+  const timeline = Array.isArray(entry?.resampleCollectedTimeline) ? entry.resampleCollectedTimeline.filter(Boolean) : [];
+  const history = Array.isArray(entry?.resampleCollectedHistory) ? entry.resampleCollectedHistory.filter(Boolean) : [];
+  if (timeline.length > 0 || history.length > 0) return true;
+  const assignedName = String(entry.sampleCollectedBy || '').trim().toLowerCase();
+  return !!assignedName && assignedName !== 'broker office sample';
+};
+const hasCompletedResampleSampleBookAttempt = (entry = {}) => {
+  if (!hasAssignedResampleCollector(entry)) return false;
+  const workflow = String(entry.workflowStatus || '').toUpperCase();
+  if (workflow === 'STAFF_ENTRY' || workflow === 'LOT_ALLOTMENT') return false;
+  return hasPostResampleSampleBookAttempt(entry);
+};
 const isFinalPassVisibleEntry = (entry = {}) => {
   const workflow = String(entry.workflowStatus || '').toUpperCase();
   const decision = String(entry.lotSelectionDecision || '').toUpperCase();
   const cookingStatus = String(entry.cookingReport?.status || '').toUpperCase();
   const hasResampleHistory = Boolean(entry.resampleStartAt) || Number(entry.qualityReportAttempts || 0) > 1;
+  const hasFinalizedOffer = Boolean(entry.offering?.finalPrice || entry.offering?.isFinalized || entry.finalPrice);
 
   if (workflow === 'FAILED' || decision === 'SOLDOUT') return false;
 
   if (decision === 'FAIL') {
+    if (workflow === 'LOT_ALLOTMENT' && hasFinalizedOffer) return false;
     return ['STAFF_ENTRY', 'QUALITY_CHECK', 'COOKING_REPORT', 'LOT_SELECTION', 'FINAL_REPORT', 'LOT_ALLOTMENT'].includes(workflow);
   }
 
   if (hasResampleHistory && decision === 'PASS_WITH_COOKING') {
+    if (workflow === 'LOT_ALLOTMENT' && hasFinalizedOffer) return false;
     return ['QUALITY_CHECK', 'COOKING_REPORT', 'LOT_SELECTION', 'FINAL_REPORT', 'LOT_ALLOTMENT'].includes(workflow);
   }
 
@@ -658,6 +786,7 @@ router.get('/tabs/loading-lots', authenticateToken, cacheMiddleware(30), async (
     });
 
     await attachLoadingLotsHistories(result.entries);
+    result.entries = result.entries.filter((entry) => String(entry?.lotSelectionDecision || '').toUpperCase() !== 'FAIL');
 
     if (result.pagination) {
       res.json({ entries: result.entries, pagination: result.pagination });
@@ -678,7 +807,7 @@ router.get('/tabs/resample-assignments', authenticateToken, cacheMiddleware(30),
 
     const where = {
       lotSelectionDecision: 'FAIL',
-      workflowStatus: { [Op.ne]: 'FAILED' }
+      workflowStatus: { [Op.in]: ['STAFF_ENTRY', 'QUALITY_CHECK', 'LOT_SELECTION', 'FINAL_REPORT', 'LOT_ALLOTMENT'] }
     };
     if (broker) where.brokerName = { [Op.iLike]: `%${broker}%` };
     if (variety) where.variety = { [Op.iLike]: `%${variety}%` };
@@ -715,19 +844,13 @@ router.get('/tabs/resample-assignments', authenticateToken, cacheMiddleware(30),
       }
     });
 
-    const filteredEntries = result.entries.filter((entry) => {
-      const lotSelectionAt = entry.lotSelectionAt ? new Date(entry.lotSelectionAt).getTime() : 0;
-      if (!lotSelectionAt) return true;
-      const qualityAt = entry.qualityParameters
-        ? new Date(entry.qualityParameters.updatedAt || entry.qualityParameters.createdAt || 0).getTime()
-        : 0;
-      return !qualityAt || qualityAt <= lotSelectionAt;
-    });
+    await attachLoadingLotsHistories(result.entries);
+    result.entries = result.entries.filter((entry) => !hasPostResampleSampleBookAttempt(entry));
 
     if (result.pagination) {
-      res.json({ entries: filteredEntries, pagination: result.pagination });
+      res.json({ entries: result.entries, pagination: result.pagination });
     } else {
-      res.json({ entries: filteredEntries, total: filteredEntries.length, page: parseInt(page, 10), pageSize: parseInt(pageSize, 10) });
+      res.json({ entries: result.entries, total: result.entries.length, page: parseInt(page, 10), pageSize: parseInt(pageSize, 10) });
     }
   } catch (error) {
     console.error('Error getting resample assignments:', error.message);
@@ -1072,7 +1195,9 @@ router.get('/tabs/final-pass-lots', authenticateToken, cacheMiddleware(15), asyn
           row.setDataValue('qualityPending', state.qualityPending);
           row.setDataValue('cookingPending', state.cookingPending);
         }
-        return !(state && state.recheckRequested);
+        if (!(state && state.recheckRequested)) return true;
+        const rowData = row?.toJSON ? row.toJSON() : row;
+        return isFinalPassVisibleEntry(rowData);
       });
       await attachLoadingLotsHistories(filteredRows);
       const visibleRows = filteredRows.filter((row) => isFinalPassVisibleEntry(row?.toJSON ? row.toJSON() : row));
@@ -1105,7 +1230,9 @@ router.get('/tabs/final-pass-lots', authenticateToken, cacheMiddleware(15), asyn
         row.setDataValue('qualityPending', state.qualityPending);
         row.setDataValue('cookingPending', state.cookingPending);
       }
-      return !(state && state.recheckRequested);
+      if (!(state && state.recheckRequested)) return true;
+      const rowData = row?.toJSON ? row.toJSON() : row;
+      return isFinalPassVisibleEntry(rowData);
     });
     await attachLoadingLotsHistories(filteredRows);
     const visibleRows = filteredRows.filter((row) => isFinalPassVisibleEntry(row?.toJSON ? row.toJSON() : row));
@@ -1388,6 +1515,29 @@ router.put('/:id', authenticateToken, async (req, res) => {
           return res.status(404).json({ error: 'Sample entry not found' });
         }
 
+        if (isResampleAssignmentUpdate) {
+          try {
+            const currentWorkflow = String(entry.workflowStatus || '').toUpperCase();
+            const workflowRole = getWorkflowRole(req.user);
+            if (['STAFF_ENTRY', 'FINAL_REPORT', 'LOT_ALLOTMENT', 'QUALITY_CHECK'].includes(currentWorkflow)) {
+              await WorkflowEngine.transitionTo(
+                req.params.id,
+                'QUALITY_CHECK',
+                req.user.userId,
+                workflowRole,
+                {
+                  resampleAssignment: true,
+                  resampleCollectorAssigned: true,
+                  resampleCollectedBy: updates.sampleCollectedBy
+                }
+              );
+            }
+          } catch (transitionError) {
+            console.error('Error transitioning resample assignment to QUALITY_CHECK:', transitionError);
+            return res.status(400).json({ error: transitionError.message });
+          }
+        }
+
         res.json(entry);
       } catch (error) {
         console.error('Error updating sample entry:', error);
@@ -1558,10 +1708,7 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
             null
           );
           const isRecheckQualityPending = recheckState.qualityPending === true;
-          const qualityUpdatedAt = existingQuality?.updatedAt || existingQuality?.createdAt || null;
-          const lotSelectionAt = sampleEntry?.lotSelectionAt || null;
-          const isResampleQualityPending = !!(sampleEntry?.lotSelectionDecision === 'FAIL' && lotSelectionAt && qualityUpdatedAt
-            && new Date(qualityUpdatedAt).getTime() < new Date(lotSelectionAt).getTime());
+          const isResampleQualityPending = String(sampleEntry?.lotSelectionDecision || '').toUpperCase() === 'FAIL';
 
           // Staff one-time edit check: if already used their available chances, block
           const qualityEditAllowance = Math.max(1, Number(sampleEntry?.staffQualityEditAllowance || 1));
@@ -1598,8 +1745,13 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
               const uploadResult = await FileUploadService.uploadFile(req.file, { compress: true });
               qualityData.uploadFileUrl = uploadResult.fileUrl;
             }
-            const updatedQuality = await QualityParametersService.addQualityParameters(
-              qualityData,
+            const updatedQuality = await QualityParametersService.updateQualityParameters(
+              existingQuality.id,
+              {
+                ...qualityData,
+                is100Grams: req.body.is100Grams === 'true' || req.body.is100Grams === true,
+                reportedByUserId: req.user.userId
+              },
               req.user.userId,
               getWorkflowRole(req.user)
             );
@@ -1615,6 +1767,7 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
                 qualityEditApprovalApprovedAt: null
               });
             }
+            invalidateSampleEntryTabCaches();
             return res.status(200).json(updatedQuality);
           } else if (['admin', 'manager', 'owner'].includes(req.user.role)) {
             // Admin/manager/owner can always update - no restriction
@@ -1622,11 +1775,17 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
               const uploadResult = await FileUploadService.uploadFile(req.file, { compress: true });
               qualityData.uploadFileUrl = uploadResult.fileUrl;
             }
-            const updatedQuality = await QualityParametersService.addQualityParameters(
-              qualityData,
+            const updatedQuality = await QualityParametersService.updateQualityParameters(
+              existingQuality.id,
+              {
+                ...qualityData,
+                is100Grams: req.body.is100Grams === 'true' || req.body.is100Grams === true,
+                reportedByUserId: req.user.userId
+              },
               req.user.userId,
               getWorkflowRole(req.user)
             );
+            invalidateSampleEntryTabCaches();
             return res.status(200).json(updatedQuality);
           }
 
@@ -1646,6 +1805,7 @@ router.post('/:id/quality-parameters', authenticateToken, async (req, res) => {
           getWorkflowRole(req.user)
         );
 
+        invalidateSampleEntryTabCaches();
         res.status(201).json(quality);
       } catch (error) {
         console.error('Error adding quality parameters:', error);
@@ -1704,10 +1864,7 @@ router.put('/:id/quality-parameters', authenticateToken, async (req, res) => {
           null
         );
         const isRecheckQualityPending = recheckState.qualityPending === true;
-        const qualityUpdatedAt = existing?.updatedAt || existing?.createdAt || null;
-        const lotSelectionAt = sampleEntry?.lotSelectionAt || null;
-        const isResampleQualityPending = !!(sampleEntry?.lotSelectionDecision === 'FAIL' && lotSelectionAt && qualityUpdatedAt
-          && new Date(qualityUpdatedAt).getTime() < new Date(lotSelectionAt).getTime());
+        const isResampleQualityPending = String(sampleEntry?.lotSelectionDecision || '').toUpperCase() === 'FAIL';
 
         // Admin/Manager edit only. Staff can edit quality only up to their approved allowance.
         const qualityEditAllowance = Math.max(1, Number(sampleEntry.staffQualityEditAllowance || 1));
@@ -1821,6 +1978,7 @@ router.put('/:id/quality-parameters', authenticateToken, async (req, res) => {
           });
         }
 
+        invalidateSampleEntryTabCaches();
         res.json(updated);
       } catch (innerError) {
         console.error('Error in quality parameters update logic:', innerError);
@@ -2097,11 +2255,11 @@ router.post('/:id/cooking-report', authenticateToken, async (req, res) => {
   }
 });
 
-// Update offering price (Owner/Admin)
+// Update offering price (Owner/Admin/Manager)
 router.post('/:id/offering-price', authenticateToken, async (req, res) => {
   try {
-    if (!['admin', 'owner'].includes(getWorkflowRole(req.user))) {
-      return res.status(403).json({ error: 'Only admin or owner can update offering price' });
+    if (!['admin', 'owner', 'manager'].includes(getWorkflowRole(req.user))) {
+      return res.status(403).json({ error: 'Only admin, owner, or manager can update offering price' });
     }
 
     const entry = await SampleEntryService.updateOfferingPrice(
@@ -2142,7 +2300,8 @@ router.post('/:id/final-price', authenticateToken, async (req, res) => {
         lotSelectionByUserId: req.user.userId,
         lotSelectionAt: new Date(),
         entryType: 'LOCATION_SAMPLE',
-        staffBagsEdits: 0
+        staffBagsEdits: 0,
+        sampleCollectedBy: null
       };
       if (req.body.resampleCollectedBy) {
         resampleUpdate.sampleCollectedBy = req.body.resampleCollectedBy;

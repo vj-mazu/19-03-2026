@@ -1603,6 +1603,14 @@ const startServer = async () => {
         console.log('âš ï¸ Migration 120 warning:', error.message);
       }
 
+      try {
+        const addQualityAttemptFields = require('./migrations/121_add_quality_attempt_fields_to_sample_entries');
+        await addQualityAttemptFields.up(sequelize.getQueryInterface(), sequelize.Sequelize);
+        console.log('✅ Migration 121: sample entry quality attempt fields added');
+      } catch (error) {
+        console.log('⚠️ Migration 121 warning:', error.message);
+      }
+
     // Default warehouses removed - users should create their own warehouses
 
     // Create default users if they don't exist

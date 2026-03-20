@@ -102,10 +102,13 @@ class QualityParametersService {
 
       // Fetch the sample entry to check its status
       const sampleEntry = await SampleEntryRepository.findById(qualityData.sampleEntryId);
+      const workflowStatus = String(sampleEntry?.workflowStatus || '').toUpperCase();
+      const lotSelectionDecision = String(sampleEntry?.lotSelectionDecision || '').toUpperCase();
 
       // Transition workflow to LOT_SELECTION (from STAFF_ENTRY) once quality is added
       if (sampleEntry) {
-        if (sampleEntry.workflowStatus === 'STAFF_ENTRY') {
+        let transitioned = false;
+        if (workflowStatus === 'STAFF_ENTRY') {
           const nextStatus = 'LOT_SELECTION';
           console.log(`[QUALITY] Transitioning fresh entry ${qualityData.sampleEntryId} from STAFF_ENTRY to ${nextStatus}`);
           await WorkflowEngine.transitionTo(
@@ -114,7 +117,8 @@ class QualityParametersService {
             userId,
             userRole
           );
-        } else if (sampleEntry.workflowStatus === 'QUALITY_CHECK') {
+          transitioned = true;
+        } else if (workflowStatus === 'QUALITY_CHECK') {
           // Auto-transition logic for rechecks
           try {
             const SampleEntryAuditLog = require('../models/SampleEntryAuditLog');
@@ -130,7 +134,7 @@ class QualityParametersService {
             });
 
             const latestRecheck = transitions.find(log => log?.metadata?.recheckRequested === true);
-            
+             
             if (latestRecheck?.metadata?.recheckType === 'both') {
               console.log(`[QUALITY] Auto-transitioning 'BOTH' recheck lot ${sampleEntry.id} to COOKING_REPORT`);
               await WorkflowEngine.transitionTo(
@@ -140,6 +144,7 @@ class QualityParametersService {
                 userRole,
                 { recheckType: 'both', qualityParametersId: quality.id, autoTransitionFromBoth: true }
               );
+              transitioned = true;
             } else if (latestRecheck?.metadata?.recheckType === 'quality' || latestRecheck?.metadata?.recheckType === 'standard_recheck') {
               console.log(`[QUALITY] Auto-transitioning 'QUALITY' recheck lot ${qualityData.sampleEntryId} from QUALITY_CHECK to LOT_SELECTION`);
               await WorkflowEngine.transitionTo(
@@ -148,11 +153,26 @@ class QualityParametersService {
                 userId,
                 userRole
               );
+              transitioned = true;
             }
           } catch (auditErr) {
             console.log(`[QUALITY] Skipping auto-transition: ${auditErr.message}`);
           }
-        } else {
+        }
+
+        if (!transitioned && lotSelectionDecision === 'FAIL' && ['QUALITY_CHECK', 'FINAL_REPORT', 'LOT_ALLOTMENT'].includes(workflowStatus)) {
+          console.log(`[QUALITY] Transitioning resample entry ${qualityData.sampleEntryId} from ${workflowStatus} to LOT_SELECTION`);
+          await WorkflowEngine.transitionTo(
+            qualityData.sampleEntryId,
+            'LOT_SELECTION',
+            userId,
+            userRole,
+            { resampleQualitySaved: true }
+          );
+          transitioned = true;
+        }
+
+        if (!transitioned) {
           console.log(`[QUALITY] Skipping transition for ${qualityData.sampleEntryId}: current status is ${sampleEntry?.workflowStatus}`);
         }
       }
@@ -204,12 +224,21 @@ class QualityParametersService {
       if (userRole) {
         try {
           const sampleEntry = await SampleEntryRepository.findById(updates.sampleEntryId);
-          if (sampleEntry && !updates.is100Grams && sampleEntry.workflowStatus === 'STAFF_ENTRY') {
+          const workflowStatus = String(sampleEntry?.workflowStatus || '').toUpperCase();
+          const lotSelectionDecision = String(sampleEntry?.lotSelectionDecision || '').toUpperCase();
+          if (
+            sampleEntry
+            && (
+              workflowStatus === 'STAFF_ENTRY'
+              || (lotSelectionDecision === 'FAIL' && ['QUALITY_CHECK', 'FINAL_REPORT', 'LOT_ALLOTMENT'].includes(workflowStatus))
+            )
+          ) {
             await WorkflowEngine.transitionTo(
               updates.sampleEntryId,
               'LOT_SELECTION',
               userId,
-              userRole
+              userRole,
+              lotSelectionDecision === 'FAIL' ? { resampleQualitySaved: true } : {}
             );
           }
         } catch (weErr) {

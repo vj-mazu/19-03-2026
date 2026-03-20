@@ -11,6 +11,7 @@ interface SampleEntry {
   serialNo?: number;
   entryDate: string;
   createdAt?: string;
+  updatedAt?: string;
   brokerName: string;
   variety: string;
   partyName: string;
@@ -40,6 +41,10 @@ interface SampleEntry {
   cookingReport?: any;
   creator?: { id: number; username: string; fullName?: string };
   qualityReportAttempts?: number;
+  sampleCollectedHistory?: string[];
+  sampleCollectedTimeline?: Array<{ name?: string; date?: string | null } | string>;
+  resampleCollectedHistory?: string[];
+  resampleCollectedTimeline?: Array<{ name?: string; date?: string | null } | string>;
 }
 
 interface OfferingData {
@@ -108,7 +113,7 @@ interface FinalPriceFormData {
   remarks: string;
 }
 
-type OfferSlotKey = 'offer1' | 'offer2' | 'offer3';
+type OfferSlotKey = string;
 
 interface OfferVersionData {
   key: OfferSlotKey;
@@ -142,6 +147,8 @@ interface OfferVersionData {
   paymentConditionUnit?: 'days' | 'month';
   remarks?: string;
   updatedAt?: string;
+  createdByRole?: string | null;
+  updatedByRole?: string | null;
 }
 
 // Shared styles
@@ -151,10 +158,10 @@ const radioLabelStyle: React.CSSProperties = { fontSize: '11px', cursor: 'pointe
 
 const headerCellStyle: React.CSSProperties = { padding: '8px', fontWeight: '600', fontSize: '11px', whiteSpace: 'nowrap' };
 const dataCellStyle: React.CSSProperties = { padding: '6px', fontSize: '11px', whiteSpace: 'nowrap' };
-const compactModalGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '6px', marginBottom: '6px' };
+const compactModalGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(118px, 0.7fr) minmax(118px, 0.8fr)', gap: '6px', marginBottom: '6px' };
 const compactSplitInputStyle: React.CSSProperties = { display: 'flex', gap: '4px', flexWrap: 'wrap' };
-const compactNarrowFieldStyle: React.CSSProperties = { maxWidth: '150px' };
-const compactMiniFieldStyle: React.CSSProperties = { maxWidth: '132px' };
+const compactNarrowFieldStyle: React.CSSProperties = { maxWidth: '132px' };
+const compactMiniFieldStyle: React.CSSProperties = { maxWidth: '124px' };
 
 const toTitleCase = (str: string) => str ? str.replace(/\b\w/g, c => c.toUpperCase()) : '';
 const toSentenceCase = (value: string) => {
@@ -262,8 +269,19 @@ const cookingStatusLabel = (status?: string) => {
   if (key === 'FAIL') return 'Fail';
   return '-';
 };
-const OFFER_KEYS: OfferSlotKey[] = ['offer1', 'offer2', 'offer3'];
-const getOfferLabel = (key: OfferSlotKey) => key === 'offer1' ? 'Offer 1' : key === 'offer2' ? 'Offer 2' : 'Offer 3';
+const OFFER_KEY_PATTERN = /^offer(\d+)$/i;
+const isValidOfferKey = (value?: string | null) => OFFER_KEY_PATTERN.test(String(value || '').trim());
+const getOfferIndex = (value?: string | null) => {
+  const match = String(value || '').trim().match(OFFER_KEY_PATTERN);
+  const index = match ? Number(match[1]) : NaN;
+  return Number.isFinite(index) && index > 0 ? index : 1;
+};
+const createOfferKey = (index: number) => `offer${Math.max(1, Number(index) || 1)}`;
+const getNextOfferKey = (versions: Array<{ key?: string }>, currentKey?: string) => {
+  const maxVersionIndex = versions.reduce((max, offer) => Math.max(max, getOfferIndex(offer?.key)), 0);
+  return createOfferKey(Math.max(maxVersionIndex, getOfferIndex(currentKey)) + 1);
+};
+const getOfferLabel = (key: OfferSlotKey) => `Offer ${getOfferIndex(key)}`;
 const DEFAULT_PADDY_OFFER: OfferingData = {
   offerRate: '',
   sute: '',
@@ -331,11 +349,9 @@ const DEFAULT_FINAL_DATA: FinalPriceFormData = {
 const normalizeOfferVersions = (offering: any): OfferVersionData[] => {
   if (!offering?.offerVersions || !Array.isArray(offering.offerVersions)) return [];
   return offering.offerVersions
-    .filter((offer: any) => OFFER_KEYS.includes(offer?.key))
+    .filter((offer: any) => isValidOfferKey(offer?.key))
     .sort((left: any, right: any) => {
-      const leftIndex = OFFER_KEYS.indexOf(left.key);
-      const rightIndex = OFFER_KEYS.indexOf(right.key);
-      return leftIndex - rightIndex;
+      return getOfferIndex(left.key) - getOfferIndex(right.key);
     });
 };
 const getLatestOffer = (offering: any): OfferVersionData | null => {
@@ -345,7 +361,7 @@ const getLatestOffer = (offering: any): OfferVersionData | null => {
     const leftTime = new Date(left.updatedAt || 0).getTime();
     const rightTime = new Date(right.updatedAt || 0).getTime();
     if (leftTime !== rightTime) return rightTime - leftTime;
-    return OFFER_KEYS.indexOf(right.key) - OFFER_KEYS.indexOf(left.key);
+    return getOfferIndex(right.key) - getOfferIndex(left.key);
   })[0];
 };
 const getActiveOffer = (offering: any): OfferVersionData | null => {
@@ -385,15 +401,19 @@ const formatShortEntryDate = (value?: string | null) => {
   return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 const getResampleAssignmentTimeline = (entry: any) => {
-  const rawTimeline = Array.isArray(entry?.sampleCollectedTimeline) ? entry.sampleCollectedTimeline : [];
-  const resampleStartTime = entry?.resampleStartAt ? new Date(entry.resampleStartAt).getTime() : 0;
+  const hasResampleFlow = String(entry?.lotSelectionDecision || '').trim().toUpperCase() === 'FAIL'
+    || (Array.isArray(entry?.resampleCollectedTimeline) && entry.resampleCollectedTimeline.length > 0)
+    || (Array.isArray(entry?.resampleCollectedHistory) && entry.resampleCollectedHistory.length > 0)
+    || Number(entry?.qualityReportAttempts || 0) > 1;
+  if (!hasResampleFlow) return [];
+  const rawTimeline = Array.isArray(entry?.resampleCollectedTimeline) ? entry.resampleCollectedTimeline : [];
+  const rawHistory = Array.isArray(entry?.resampleCollectedHistory) ? entry.resampleCollectedHistory : [];
   const normalized: Array<{ name: string; date: string | null }> = [];
-  rawTimeline.forEach((item: any) => {
-    const name = typeof item === 'string' ? item.trim() : String(item?.name || '').trim();
-    const date = typeof item === 'object' && item ? (item.date || null) : null;
-    const itemTime = date ? new Date(date).getTime() : 0;
-    if (!name) return;
-    if (resampleStartTime > 0 && itemTime > 0 && itemTime < resampleStartTime) return;
+  const isBrokerOfficeName = (value?: string | null) => String(value || '').trim().toLowerCase() === 'broker office sample';
+  const pushAssignment = (nameValue?: string | null, dateValue?: string | null) => {
+    const name = String(nameValue || '').trim();
+    const date = dateValue || null;
+    if (!name || isBrokerOfficeName(name)) return;
     const lastItem = normalized[normalized.length - 1];
     if (lastItem && lastItem.name.toLowerCase() === name.toLowerCase()) {
       if (!lastItem.date && date) {
@@ -402,55 +422,131 @@ const getResampleAssignmentTimeline = (entry: any) => {
       return;
     }
     normalized.push({ name, date });
+  };
+
+  rawTimeline.forEach((item: any) => {
+    const name = typeof item === 'string' ? item.trim() : String(item?.name || '').trim();
+    const date = typeof item === 'object' && item ? (item.date || null) : null;
+    pushAssignment(name, date);
   });
   if (normalized.length === 0) {
-    const fallbackName = String(entry?.sampleCollectedBy || '').trim();
-    if (fallbackName) {
-      normalized.push({ name: fallbackName, date: entry?.updatedAt || entry?.lotSelectionAt || entry?.entryDate || null });
-    }
+    rawHistory.forEach((name) => pushAssignment(name, null));
+  }
+  const currentName = String(entry?.sampleCollectedBy || '').trim();
+  if (currentName && !isBrokerOfficeName(currentName) && hasResampleFlow) {
+    pushAssignment(currentName, entry?.updatedAt || null);
   }
   return normalized;
 };
-const buildOfferFormData = (offer?: Partial<OfferVersionData> | null): OfferingData => ({
-  ...DEFAULT_PADDY_OFFER,
-  offerRate: offer?.offerBaseRateValue?.toString() || '',
-  offerBaseRateValue: offer?.offerBaseRateValue?.toString() || '',
-  sute: offer?.sute?.toString() || '',
-  suteUnit: offer?.suteUnit || 'per_bag',
-  baseRateType: offer?.baseRateType || 'PD_WB',
-  baseRateUnit: offer?.baseRateUnit || 'per_bag',
-  hamaliEnabled: !!offer?.hamaliEnabled,
-  hamaliValue: toOptionalInputValue(offer?.hamali),
-  hamaliUnit: offer?.hamaliUnit || 'per_bag',
-  moistureValue: offer?.moistureValue?.toString() || '',
-  brokerageEnabled: !!offer?.brokerageEnabled,
-  brokerageValue: toOptionalInputValue(offer?.brokerage),
-  brokerageUnit: offer?.brokerageUnit || 'per_bag',
-  lfEnabled: !!offer?.lfEnabled,
-  lfValue: toOptionalInputValue(offer?.lf),
-  lfUnit: offer?.lfUnit || 'per_bag',
-  egbType: offer?.egbType || 'mill',
-  egbValue: offer?.egbType === 'purchase' ? offer?.egbValue?.toString() || '' : '0',
-  customDivisor: offer?.customDivisor?.toString() || '',
-  cdEnabled: !!offer?.cdEnabled,
-  cdValue: toOptionalInputValue(offer?.cdValue),
-  cdUnit: offer?.cdUnit || 'percentage',
-  bankLoanEnabled: !!offer?.bankLoanEnabled,
-  bankLoanValue: toOptionalInputValue(offer?.bankLoanValue),
-  bankLoanUnit: offer?.bankLoanUnit || 'per_bag',
-  paymentConditionEnabled: offer?.paymentConditionEnabled != null
-    ? !!offer.paymentConditionEnabled
-    : true,
-  paymentConditionValue: offer?.paymentConditionValue?.toString() || '15',
-  paymentConditionUnit: offer?.paymentConditionUnit || 'days',
-  remarks: offer?.remarks || ''
-});
+const getLatestHistoryCollector = (history: any) => {
+  if (!Array.isArray(history)) return '';
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const value = String(history[index] || '').trim();
+    if (value && value.toLowerCase() !== 'broker office sample') {
+      return value;
+    }
+  }
+  return '';
+};
+const getLatestResampleAssignedCollector = (entry: any) => {
+  const timeline = getResampleAssignmentTimeline(entry);
+  if (timeline.length > 0) {
+    return timeline[timeline.length - 1]?.name || '';
+  }
+  return getLatestHistoryCollector(entry?.resampleCollectedHistory);
+};
+const getFinalPassCollectedByDisplay = (entry: any) => {
+  const latestAssignedCollector = getLatestResampleAssignedCollector(entry);
+  if (latestAssignedCollector) return getCollectorLabel(latestAssignedCollector);
+  const latestCollectedHistory = getLatestHistoryCollector(entry?.sampleCollectedHistory);
+  const fallbackCollector = String(entry?.sampleCollectedBy || '').trim() || latestCollectedHistory;
+  if ((entry as any).sampleGivenToOffice && fallbackCollector) {
+    return `${getCreatorLabel(entry)} / ${getCollectorLabel(fallbackCollector)}`;
+  }
+  if (fallbackCollector) return getCollectorLabel(fallbackCollector);
+  return '-';
+};
+const buildOfferFormData = (offer?: Partial<OfferVersionData> | null): OfferingData => {
+  const base = { ...DEFAULT_PADDY_OFFER };
+  if (!offer) return base;
+
+  return {
+    ...base,
+    offerRate: (offer?.offerBaseRateValue ?? '').toString(),
+    offerBaseRateValue: (offer?.offerBaseRateValue ?? '').toString(),
+    sute: (offer?.sute ?? '').toString(),
+    suteUnit: offer?.suteUnit || 'per_bag',
+    baseRateType: offer?.baseRateType || 'PD_WB',
+    baseRateUnit: offer?.baseRateUnit || 'per_bag',
+    hamaliEnabled: !!offer?.hamaliEnabled,
+    hamaliValue: toOptionalInputValue(offer?.hamali),
+    hamaliUnit: offer?.hamaliUnit || 'per_bag',
+    moistureValue: (offer?.moistureValue ?? '').toString(),
+    brokerageEnabled: !!offer?.brokerageEnabled,
+    brokerageValue: toOptionalInputValue(offer?.brokerage),
+    brokerageUnit: offer?.brokerageUnit || 'per_bag',
+    lfEnabled: !!offer?.lfEnabled,
+    lfValue: toOptionalInputValue(offer?.lf),
+    lfUnit: offer?.lfUnit || 'per_bag',
+    egbType: offer?.egbType || 'mill',
+    egbValue: offer?.egbType === 'purchase' ? (offer?.egbValue ?? '').toString() : '0',
+    customDivisor: (offer?.customDivisor ?? '').toString(),
+    cdEnabled: !!offer?.cdEnabled,
+    cdValue: toOptionalInputValue(offer?.cdValue),
+    cdUnit: offer?.cdUnit || 'percentage',
+    bankLoanEnabled: !!offer?.bankLoanEnabled,
+    bankLoanValue: toOptionalInputValue(offer?.bankLoanValue),
+    bankLoanUnit: offer?.bankLoanUnit || 'per_bag',
+    paymentConditionEnabled: offer?.paymentConditionEnabled != null
+      ? !!offer.paymentConditionEnabled
+      : true,
+    paymentConditionValue: (offer?.paymentConditionValue ?? '15').toString(),
+    paymentConditionUnit: offer?.paymentConditionUnit || 'days',
+    remarks: offer?.remarks || ''
+  };
+};
 const formatOfferBadge = (offering: any) => {
   const latestOffer = getLatestOffer(offering);
   const versions = normalizeOfferVersions(offering);
   if (!latestOffer?.offerBaseRateValue) return 'Add Offer';
   const icon = versions.length > 1 ? ' 👀' : '';
   return `Rs ${toNumberText(latestOffer.offerBaseRateValue)}${icon}`;
+};
+const getOfferActorRole = (offering: any) => {
+  const activeOffer = offering?.activeOffer;
+  const latestOffer = offering?.latestOffer;
+  const fallbackOffer = Array.isArray(offering?.offerVersions) && offering.offerVersions.length > 0
+    ? [...offering.offerVersions].sort((left: any, right: any) => new Date(right?.updatedAt || 0).getTime() - new Date(left?.updatedAt || 0).getTime())[0]
+    : null;
+  return String(
+    activeOffer?.updatedByRole
+    || activeOffer?.createdByRole
+    || latestOffer?.updatedByRole
+    || latestOffer?.createdByRole
+    || fallbackOffer?.updatedByRole
+    || fallbackOffer?.createdByRole
+    || ''
+  ).trim().toLowerCase();
+};
+const getOfferActorMeta = (offering: any) => {
+  if (getOfferActorRole(offering) === 'manager') {
+    return {
+      label: 'Manager Added',
+      style: {
+        color: '#9a3412',
+        background: '#ffedd5',
+        border: '1px solid #fdba74'
+      }
+    };
+  }
+  return {
+    label: 'Admin Added',
+    style: {
+      color: '#155724',
+      background: '#d4edda',
+      border: '1px solid #c3e6cb'
+    }
+  };
 };
 
 interface FinalPassLotsProps {
@@ -505,6 +601,29 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
   const [finalPassView, setFinalPassView] = useState<'FINAL_PASS' | 'RESAMPLE_ALLOTMENT'>('FINAL_PASS');
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [resampleAssignmentCount, setResampleAssignmentCount] = useState(0);
+  const renderTabBadge = (count: number, background: string) => (
+    count > 0 ? (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: '18px',
+          height: '18px',
+          marginLeft: '6px',
+          padding: '0 6px',
+          borderRadius: '999px',
+          background,
+          color: '#fff',
+          fontSize: '11px',
+          fontWeight: 800,
+          lineHeight: 1
+        }}
+      >
+        {count}
+      </span>
+    ) : null
+  );
 
   // Server-side Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -643,8 +762,8 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
 
       if (versions.length > 0) {
         setOfferVersions(versions);
-        setCurrentOfferKey((latestOffer?.key || versions[0].key) as OfferSlotKey);
-        setActiveOfferKey((activeOffer?.key || latestOffer?.key || versions[0].key) as OfferSlotKey);
+        setCurrentOfferKey(latestOffer?.key || versions[0].key);
+        setActiveOfferKey(activeOffer?.key || latestOffer?.key || versions[0].key);
         setOfferData(buildOfferFormData(latestOffer));
       } else {
         resetOfferData(entry);
@@ -675,10 +794,11 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
   };
 
   const handleAddOfferSlot = () => {
-    const nextSlot = OFFER_KEYS.find((slotKey) => !offerVersions.some((offer) => offer.key === slotKey) && slotKey !== currentOfferKey);
-    if (!nextSlot) return;
+    const nextSlot = getNextOfferKey(offerVersions, currentOfferKey);
+    // Pre-fill with CURRENT form data (fetch 1 to two)
+    const newData = { ...offerData };
     setCurrentOfferKey(nextSlot);
-    setOfferData({ ...offerData });
+    setOfferData(newData);
   };
 
   const handleSubmitOffer = async (e: React.FormEvent) => {
@@ -883,7 +1003,7 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
     }
   };
 
-  const handleLotAction = async (entryId: string, decision: 'SOLDOUT' | 'FAIL') => {
+  const handleLotAction = async (entryId: string, decision: 'SOLDOUT' | 'FAIL' | 'RESAMPLE') => {
     if (isSubmitting) return;
     const lockKey = `lot-action-${entryId}-${decision}`;
     if (!acquireSubmissionLock(lockKey)) return;
@@ -937,9 +1057,12 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
   const isFinalEgbVisible = hasEgbForRateType(finalData.baseRateType);
   const isFinalLfVisible = hasLfForRateType(finalData.baseRateType);
   const isFinalCustomDivisorVisible = finalData.baseRateUnit === 'per_kg';
-  const visibleOfferKeys = OFFER_KEYS.filter((slotKey) => offerVersions.some((offer) => offer.key === slotKey) || slotKey === currentOfferKey);
-  const canAddMoreOffers = OFFER_KEYS.some((slotKey) => !visibleOfferKeys.includes(slotKey));
-  const isOfferEditLocked = false;
+  const visibleOfferKeys = Array.from(new Set([
+    ...offerVersions.map((offer) => offer.key).filter((key): key is string => Boolean(key)),
+    currentOfferKey
+  ])).sort((left, right) => getOfferIndex(left) - getOfferIndex(right));
+  const canAddMoreOffers = true;
+  const isOfferEditLocked = getOfferIndex(currentOfferKey) < getOfferIndex(visibleOfferKeys[visibleOfferKeys.length - 1]);
   const offerSummaryRows: Array<{ label: string; value: string }> = [
     { label: 'Offer Slot', value: getOfferLabel(currentOfferKey) },
     { label: 'Final Rate Uses', value: getOfferLabel(activeOfferKey) },
@@ -1007,7 +1130,8 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
               cursor: 'pointer'
             }}
           >
-            Resample Allotment{resampleAssignmentCount > 0 ? ` (${resampleAssignmentCount})` : ''}
+            Resample Allotment
+            {renderTabBadge(resampleAssignmentCount, '#c2410c')}
           </button>
         </div>
       )}
@@ -1174,11 +1298,17 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                         <tbody>
                           {orderedEntries.map((entry, index) => {
                             const o = offeringCache[entry.id] || entry.offering;
+                            const offerActorMeta = getOfferActorMeta(o);
                             const slNo = index + 1;
                             const rowType = entry.entryType === 'DIRECT_LOADED_VEHICLE' ? 'RL' : entry.entryType === 'LOCATION_SAMPLE' ? 'LS' : 'MS';
                             const qp = entry.qualityParameters || {};
                             const cp = entry.cookingReport || {};
-                            const isResampleActive = entry.lotSelectionDecision === 'FAIL';
+                            const hasMultipleAttempts = Array.isArray((entry as any).qualityAttemptDetails) && (entry as any).qualityAttemptDetails.length > 1;
+                            const hasResampleAssignments = getResampleAssignmentTimeline(entry).length > 0;
+                            const isResampleActive = entry.lotSelectionDecision === 'FAIL'
+                              || Number(entry.qualityReportAttempts || 0) > 1
+                              || hasMultipleAttempts
+                              || hasResampleAssignments;
                             const rowBgColor = isResampleActive
                               ? '#fff7e6'
                               : entry.entryType === 'DIRECT_LOADED_VEHICLE'
@@ -1191,12 +1321,8 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                 {isRiceMode ? (
                                   <>
                                     <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'center', fontWeight: '600', fontSize: '13px', whiteSpace: 'nowrap' }}>
-                                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
-                                        {slNo}
-                                        {Math.max(0, Number(entry.qualityReportAttempts || 0)) > 1 && (
-                                          <span style={{ fontSize: '9px', backgroundColor: '#ffedd5', color: '#c2410c', border: '1px solid #fdba74', padding: '1px 4px', borderRadius: '4px', fontWeight: 'bold' }}>Re-sample</span>
-                                        )}
-                                      </div>
+                                      {/* FIXED: SL No shows only number, removed "Re-sample" text */}
+                                      {slNo}
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'center', fontWeight: '700', whiteSpace: 'nowrap' }}>{rowType}</td>
                                     <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'center', fontWeight: '600', fontSize: '13px', whiteSpace: 'nowrap' }}>{entry.bags?.toLocaleString('en-IN') || '0'}</td>
@@ -1208,12 +1334,27 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                     <td style={{ border: '1px solid #000', padding: '3px 4px', textAlign: 'left', fontSize: '11px', whiteSpace: 'nowrap' }}>{o?.finalPrice || entry.finalPrice ? `Rs ${toNumberText(o?.finalPrice || entry.finalPrice)}` : '-'}</td>
                                     <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
                                       <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'center' }}>
-                                        {isAdmin && (
+                                        {o?.offerBaseRateValue && offerActorMeta.label === 'Manager Added' ? (
+                                          <span
+                                            style={{
+                                              padding: '2px 6px',
+                                              borderRadius: '10px',
+                                              fontSize: '10px',
+                                              fontWeight: 700,
+                                              whiteSpace: 'nowrap',
+                                              display: 'inline-block',
+                                              ...offerActorMeta.style
+                                            }}
+                                          >
+                                            {offerActorMeta.label}
+                                          </span>
+                                        ) : null}
+                                        {(isAdmin || isManager) && (
                                           <button onClick={() => handleOpenOfferModal(entry)} style={{ fontSize: '10px', padding: '3px 8px', backgroundColor: o?.offerBaseRateValue ? '#3498db' : '#2196F3', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '600', whiteSpace: 'nowrap' }}>
                                             {o?.offerBaseRateValue ? 'Edit Offer' : 'Add Offer'}
                                           </button>
                                         )}
-                                        {(isAdmin || isManager) && (entry.offeringPrice || o) && (
+                                        {isAdmin && (entry.offeringPrice || o) && (
                                           <button onClick={() => handleOpenFinalModal(entry)} style={{ fontSize: '10px', padding: '3px 8px', backgroundColor: entry.finalPrice || o?.finalPrice ? '#27ae60' : '#e67e22', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '600', whiteSpace: 'nowrap' }}>
                                             {entry.finalPrice || o?.finalPrice ? 'Edit Final' : 'Add Final'}
                                           </button>
@@ -1224,12 +1365,8 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                 ) : (
                                   <>
                                     <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center', fontWeight: '600' }}>
-                                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
-                                        {slNo}
-                                        {Math.max(0, Number(entry.qualityReportAttempts || 0)) > 1 && (
-                                          <span style={{ fontSize: '9px', backgroundColor: '#ffedd5', color: '#c2410c', border: '1px solid #fdba74', padding: '1px 4px', borderRadius: '4px', fontWeight: 'bold', whiteSpace: 'nowrap' }}>Re-sample</span>
-                                        )}
-                                      </div>
+                                      {/* FIXED: SL No shows only number, removed "Re-sample" text */}
+                                      {slNo}
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center', fontWeight: '700' }}>{rowType}</td>
                                     <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center', fontWeight: '600' }}>{entry.bags?.toLocaleString('en-IN') || '0'}</td>
@@ -1238,20 +1375,9 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                     <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left' }}>{toTitleCase(entry.location) || '-'}</td>
                                     <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left' }}>{toTitleCase(entry.variety) || '-'}</td>
                                     <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left' }}>
-                                      {(entry as any).sampleGivenToOffice ? (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                          <div style={{ fontSize: '11px', fontWeight: '700', color: '#ff9800' }}>
-                                            {getCreatorLabel(entry)}
-                                          </div>
-                                          <div style={{ fontSize: '10px', color: '#000' }}>
-                                            {getCollectorLabel(entry.sampleCollectedBy)}
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <span style={{ fontSize: '11px', color: '#666' }}>
-                                          {getCollectorLabel(entry.sampleCollectedBy)}
-                                        </span>
-                                      )}
+                                      <span style={{ fontSize: '11px', color: '#666' }}>
+                                        {getFinalPassCollectedByDisplay(entry)}
+                                      </span>
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center' }}>
                                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
@@ -1344,24 +1470,41 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                     <td style={{ border: '1px solid #000', padding: '3px 5px', textAlign: 'left' }}>{qp.reportedBy ? toSentenceCase(qp.reportedBy) : '-'}</td>
                                     <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center' }}>
                                       <div style={{ fontWeight: '700', color: '#00695c' }}>{cookingStatusLabel(cp.status)}</div>
-                                      {cp.remarks ? (
-                                        <button
-                                          onClick={() => setRemarksPopup({ isOpen: true, title: `Cooking Remark - ${getPartyDisplay(entry)}`, text: cp.remarks })}
-                                          style={{ marginTop: '3px', fontSize: '10px', padding: '2px 8px', backgroundColor: '#455a64', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: 700 }}
-                                        >
+                                        {cp.remarks ? (
+                                          <button
+                                            onClick={() => setRemarksPopup({ isOpen: true, title: `Cooking Remark - ${getPartyDisplay(entry)}`, text: cp.remarks })}
+                                            style={{ marginTop: '3px', fontSize: '10px', padding: '3px 10px', backgroundColor: '#e3f2fd', color: '#1565c0', border: '1px solid #90caf9', borderRadius: '12px', cursor: 'pointer', fontWeight: 700 }}
+                                          >
                                           🔍 Remarks
-                                        </button>
-                                      ) : null}
-                                    </td>
-                                    <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center' }}>
-                                      {isAdmin ? (
-                                        <button onClick={() => handleOpenOfferModal(entry)} style={{ fontSize: '10px', padding: '3px 7px', backgroundColor: o?.offerBaseRateValue ? '#3498db' : '#2196F3', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '700' }}>
-                                          {formatOfferBadge(o)}
-                                        </button>
-                                      ) : <span>{o?.offerBaseRateValue ? `Rs ${toNumberText(o.offerBaseRateValue)}` : '-'}</span>}
+                                          </button>
+                                        ) : null}
                                     </td>
                                     <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center' }}>
                                       {(isAdmin || isManager) ? (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'center' }}>
+                                          {o?.offerBaseRateValue && offerActorMeta.label === 'Manager Added' ? (
+                                            <span
+                                              style={{
+                                                padding: '2px 6px',
+                                                borderRadius: '10px',
+                                                fontSize: '10px',
+                                                fontWeight: 700,
+                                                whiteSpace: 'nowrap',
+                                                display: 'inline-block',
+                                                ...offerActorMeta.style
+                                              }}
+                                            >
+                                              {offerActorMeta.label}
+                                            </span>
+                                          ) : null}
+                                          <button onClick={() => handleOpenOfferModal(entry)} style={{ fontSize: '10px', padding: '3px 7px', backgroundColor: o?.offerBaseRateValue ? '#3498db' : '#2196F3', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '700' }}>
+                                            {formatOfferBadge(o)}
+                                          </button>
+                                        </div>
+                                      ) : <span>{o?.offerBaseRateValue ? `Rs ${toNumberText(o.offerBaseRateValue)}` : '-'}</span>}
+                                    </td>
+                                    <td style={{ border: '1px solid #000', padding: '3px', textAlign: 'center' }}>
+                                      {isAdmin ? (
                                         <button onClick={() => handleOpenFinalModal(entry)} style={{ fontSize: '10px', padding: '3px 7px', backgroundColor: entry.finalPrice || o?.finalPrice ? '#27ae60' : '#e67e22', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '700' }}>
                                           {entry.finalPrice || o?.finalPrice ? `Rs ${toNumberText(o?.finalPrice || entry.finalPrice)}` : 'Add Final'}
                                         </button>
@@ -1388,11 +1531,11 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                           </button>
                                         </div>
                                       ) : (
-                                        entry.lotSelectionDecision === 'FAIL' ? (
+                                        isResampleActive ? (
                                           (() => {
                                             const resampleCookingDone = ['PASS', 'MEDIUM'].includes(String(cp.status || '').toUpperCase());
-                                            const resampleQualityDone = !!(qp.reportedBy || qp.id);
-                                            const resampleReadyForFinal = ['LOT_SELECTION', 'FINAL_REPORT'].includes(entry.workflowStatus) && resampleQualityDone && resampleCookingDone;
+                                            const hasFinalAlready = Boolean(entry.finalPrice || o?.finalPrice || o?.finalBaseRate);
+                                            const resampleReadyForLoading = hasFinalAlready && resampleCookingDone;
                                             return (
                                               <span
                                                 style={{
@@ -1401,12 +1544,12 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                                                   borderRadius: '10px',
                                                   fontSize: '10px',
                                                   fontWeight: 800,
-                                                  background: resampleReadyForFinal ? '#e8f5e9' : '#fff3cd',
-                                                  color: resampleReadyForFinal ? '#2e7d32' : '#8a6400',
-                                                  border: resampleReadyForFinal ? '1px solid #c8e6c9' : '1px solid #f4d06f'
+                                                  background: resampleReadyForLoading ? '#e8f5e9' : '#fff3cd',
+                                                  color: resampleReadyForLoading ? '#2e7d32' : '#8a6400',
+                                                  border: resampleReadyForLoading ? '1px solid #c8e6c9' : '1px solid #f4d06f'
                                                 }}
                                               >
-                                                {resampleReadyForFinal ? 'Ready for Loading' : 'Resample'}
+                                                {resampleReadyForLoading ? 'Ready for Loading' : 'Resample'}
                                               </span>
                                             );
                                           })()
@@ -1506,8 +1649,8 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
               </div>
 
               {!isRiceMode && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', gap: '10px', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     {visibleOfferKeys.map((slotKey) => {
                       const slotOffer = offerVersions.find((offer) => offer.key === slotKey);
                       return (
@@ -1551,11 +1694,47 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                       </button>
                     )}
                   </div>
+
+                  {(() => {
+                    const currentOfferData = offerVersions.find(ov => ov.key === currentOfferKey);
+                    if (currentOfferData?.createdByRole === 'manager') {
+                      return (
+                        <div style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          backgroundColor: '#ffedd5',
+                          color: '#9a3412',
+                          border: '1px solid #fdba74'
+                        }}>
+                          Manager Added
+                        </div>
+                      );
+                    }
+                    if (currentOfferData?.createdByRole === 'admin' || currentOfferData?.createdByRole === 'owner') {
+                      return (
+                        <div style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          backgroundColor: '#dcfce7',
+                          color: '#15803d',
+                          border: '1px solid #bbf7d0'
+                        }}>
+                          Admin Added
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
                     <span style={{ color: '#475569', fontWeight: '600' }}>Final Rate Uses</span>
                     <select
                       value={activeOfferKey}
-                      onChange={(e) => setActiveOfferKey(e.target.value as OfferSlotKey)}
+                      onChange={(e) => setActiveOfferKey(e.target.value)}
                       style={{ ...inputStyle, width: '120px', padding: '6px 8px', fontSize: '11px' }}
                     >
                       {visibleOfferKeys.map((slotKey) => (
@@ -1577,18 +1756,18 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                 <div style={compactModalGridStyle}>
                   <div style={{ minWidth: 0 }}>
                     <label style={labelStyle}>Offer Rate *</label>
-                    <div style={{ display: 'flex', gap: '4px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
+                      <input type="text" inputMode="decimal" value={offerData.offerBaseRateValue}
+                        onChange={e => setOfferData({ ...offerData, offerBaseRateValue: sanitizeAmountInput(e.target.value) })}
+                        style={{ ...inputStyle, flex: 1, minWidth: '100px' }} placeholder="Rate" />
                       <select value={offerData.baseRateType}
                         onChange={e => setOfferData({ ...offerData, baseRateType: e.target.value })}
-                        style={{ ...inputStyle, flex: '0 0 120px', width: '120px', minWidth: '120px', cursor: 'pointer', fontSize: '11px' }} required>
+                        style={{ ...inputStyle, width: '100px', flexShrink: 0, cursor: 'pointer', fontSize: '11px' }} required>
                         <option value="PD_WB">PD/WB</option>
                         <option value="PD_LOOSE">PD/Loose</option>
                         <option value="MD_WB">MD/WB</option>
                         <option value="MD_LOOSE">MD/Loose</option>
                       </select>
-                      <input type="text" inputMode="decimal" value={offerData.offerBaseRateValue}
-                        onChange={e => setOfferData({ ...offerData, offerBaseRateValue: sanitizeAmountInput(e.target.value) })}
-                        style={{ ...inputStyle, flex: '1 1 180px', minWidth: '160px' }} placeholder="Rate" />
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
                       <div style={{ display: 'flex', gap: '6px', fontSize: '11px', flexWrap: 'wrap' }}>
@@ -1888,18 +2067,18 @@ const FinalPassLots: React.FC<FinalPassLotsProps> = ({ entryType, excludeEntryTy
                 <div style={compactModalGridStyle}>
                   <div style={{ minWidth: 0 }}>
                     <label style={labelStyle}>Final Rate</label>
-                    <div style={{ display: 'flex', gap: '4px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
+                      <input type="text" inputMode="decimal" value={finalData.finalBaseRate}
+                        onChange={e => setFinalData({ ...finalData, finalBaseRate: sanitizeAmountInput(e.target.value) })}
+                        style={{ ...inputStyle, flex: 1, minWidth: '100px' }} placeholder="Rate" />
                       <select value={finalData.baseRateType}
                         onChange={e => setFinalData({ ...finalData, baseRateType: e.target.value })}
-                        style={{ ...inputStyle, flex: '0 0 120px', width: '120px', minWidth: '120px', cursor: 'pointer', fontSize: '11px' }}>
+                        style={{ ...inputStyle, width: '100px', flexShrink: 0, cursor: 'pointer', fontSize: '11px' }}>
                         <option value="PD_WB">PD/WB</option>
                         <option value="PD_LOOSE">PD/Loose</option>
                         <option value="MD_WB">MD/WB</option>
                         <option value="MD_LOOSE">MD/Loose</option>
                       </select>
-                      <input type="text" inputMode="decimal" value={finalData.finalBaseRate}
-                        onChange={e => setFinalData({ ...finalData, finalBaseRate: sanitizeAmountInput(e.target.value) })}
-                        style={{ ...inputStyle, flex: '1 1 180px', minWidth: '160px' }} placeholder="Rate" />
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
                       <div style={{ display: 'flex', gap: '6px', fontSize: '11px', flexWrap: 'wrap' }}>

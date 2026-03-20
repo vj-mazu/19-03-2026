@@ -264,12 +264,21 @@ class SampleEntryRepository {
           ]
         },
         { workflowStatus: { [Op.ne]: 'FAILED' } },
-        { entryType: 'LOCATION_SAMPLE' },
-        { sampleGivenToOffice: { [Op.ne]: true } }
+        {
+          [Op.or]: [
+            { lotSelectionDecision: 'FAIL' },
+            {
+              [Op.and]: [
+                { entryType: 'LOCATION_SAMPLE' },
+                { sampleGivenToOffice: { [Op.ne]: true } }
+              ]
+            }
+          ]
+        }
       ];
     } else if (requestedStatus === 'SAMPLE_BOOK') {
-      // Staff view: Sample Book (completed/archived staff entries)
-      where.workflowStatus = { [Op.ne]: 'STAFF_ENTRY' };
+      // Staff view: Sample Book
+      // Keep this broad so staff sample-book can show active, sold-out, and failed rows.
     } else if (requestedStatus) {
       if (requestedStatus === 'QUALITY_CHECK' && filters.entryType === 'RICE_SAMPLE') {
         where.workflowStatus = {
@@ -341,19 +350,33 @@ class SampleEntryRepository {
           ]
         };
       } else {
-        // ROBUST PRIVACY FOR ALL OTHER STAFF/SUPERVISORS:
-        // Location samples are private UNTIL:
-        //  - You created the entry (createdByUserId)
-        //  - You are named in sampleCollectedBy
-        //  - The sample was "Given to Office" (sampleGivenToOffice = true)
-        //  - Quality/100gms is completed (workflowStatus moved past STAFF_ENTRY)
         staffVisibilityClause = {
           [Op.or]: [
-            { entryType: { [Op.ne]: 'LOCATION_SAMPLE' } }, // Non-location entries always visible
-            { createdByUserId: userId },                     // Creator can always see
-            ...(username ? [{ sampleCollectedBy: { [Op.iLike]: `%${username}%` } }] : []),
-            { sampleGivenToOffice: true },                   // Given to office = visible
-            { workflowStatus: { [Op.ne]: 'STAFF_ENTRY' } }  // Quality done = visible to all
+            {
+              [Op.and]: [
+                { lotSelectionDecision: 'FAIL' },
+                ...(username ? [{ sampleCollectedBy: { [Op.iLike]: `%${username}%` } }] : [{ id: null }])
+              ]
+            },
+            {
+              [Op.and]: [
+                {
+                  [Op.or]: [
+                    { lotSelectionDecision: { [Op.ne]: 'FAIL' } },
+                    { lotSelectionDecision: null }
+                  ]
+                },
+                {
+                  [Op.or]: [
+                    { entryType: { [Op.ne]: 'LOCATION_SAMPLE' } },
+                    { createdByUserId: userId },
+                    ...(username ? [{ sampleCollectedBy: { [Op.iLike]: `%${username}%` } }] : []),
+                    { sampleGivenToOffice: true },
+                    { workflowStatus: { [Op.ne]: 'STAFF_ENTRY' } }
+                  ]
+                }
+              ]
+            }
           ]
         };
       }

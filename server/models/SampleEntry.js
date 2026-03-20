@@ -130,6 +130,18 @@ const SampleEntry = sequelize.define('SampleEntry', {
     allowNull: true,
     field: 'lot_selection_decision'
   },
+  qualityAttemptDetails: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: [],
+    field: 'quality_attempt_details'
+  },
+  qualityReportAttempts: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: 0,
+    field: 'quality_report_attempts'
+  },
   lotSelectionByUserId: {
     type: DataTypes.INTEGER,
     allowNull: true,

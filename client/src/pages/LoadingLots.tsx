@@ -171,26 +171,103 @@ const formatRsWithUnitLabel = (value: any, unit?: string) => {
   const unitLabel = formatChargeUnitLabel(unit);
   return `Rs ${formatIndianCurrency(value)}${unitLabel && unitLabel !== 'Amount' ? ` / ${unitLabel.replace(/^Per /, '')}` : ''}`;
 };
+const formatManagerChargeValue = (value: any, unit?: string) => {
+  if (!hasValue(value)) return 'Pending';
+  return `${toEnteredAmountText(value)} | ${formatChargeUnitLabel(unit)}`;
+};
+const formatManagerRateValue = (value: any, unit?: string) => {
+  if (!hasValue(value)) return 'Pending';
+  return `Rs ${formatIndianCurrency(value)} | ${formatRateUnitLabel(unit)}`;
+};
+const formatManagerSuteValue = (value: any, unit?: string) => {
+  if (!hasValue(value)) return 'Pending';
+  return `${toEnteredAmountText(value)} | ${formatSuteUnitLabel(unit)}`;
+};
+const getOfferActorRole = (offering: any) => {
+  const activeOffer = offering?.activeOffer;
+  const latestOffer = offering?.latestOffer;
+  const fallbackOffer = Array.isArray(offering?.offerVersions) && offering.offerVersions.length > 0
+    ? [...offering.offerVersions].sort((left: any, right: any) => new Date(right?.updatedAt || 0).getTime() - new Date(left?.updatedAt || 0).getTime())[0]
+    : null;
+  return String(
+    activeOffer?.updatedByRole
+    || activeOffer?.createdByRole
+    || latestOffer?.updatedByRole
+    || latestOffer?.createdByRole
+    || fallbackOffer?.updatedByRole
+    || fallbackOffer?.createdByRole
+    || ''
+  ).trim().toLowerCase();
+};
+const getOfferActorMeta = (offering: any) => {
+  if (getOfferActorRole(offering) === 'manager') {
+    return {
+      label: 'Manager Added',
+      style: {
+        color: '#9a3412',
+        background: '#ffedd5',
+        border: '1px solid #fdba74'
+      }
+    };
+  }
+  return {
+    label: 'Admin Added',
+    style: {
+      color: '#155724',
+      background: '#d4edda',
+      border: '1px solid #c3e6cb'
+    }
+  };
+};
+const toTs = (value?: string | null) => {
+  const ts = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(ts) ? ts : 0;
+};
+const hasCookingActivity = (entry?: SampleEntry | null) => {
+  const history = Array.isArray(entry?.cookingReport?.history)
+    ? entry.cookingReport.history.filter(Boolean)
+    : [];
+  return history.length > 0 || Boolean(
+    entry?.cookingReport?.status
+    || entry?.cookingReport?.remarks
+    || (entry as any)?.cookingReport?.cookingDoneBy
+    || (entry as any)?.cookingReport?.cookingApprovedBy
+  );
+};
 const hasValue = (value: any) => value !== null && value !== undefined && value !== '';
+const hasPositiveAmount = (value: any) => {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0;
+};
 const sanitizeMoistureInput = (value: string) => {
   const cleaned = value.replace(/[^0-9.]/g, '');
   const [integerPartRaw, ...rest] = cleaned.split('.');
   const integerPart = integerPartRaw.slice(0, 2);
+  const hasTrailingDot = cleaned.endsWith('.') && rest.length === 1 && rest[0] === '';
 
   if (rest.length === 0) return integerPart;
 
   const decimalPart = rest.join('').slice(0, 2);
-  return `${integerPart}.${decimalPart}`.slice(0, 5);
+  if (decimalPart) {
+    return `${integerPart}.${decimalPart}`.slice(0, 5);
+  }
+
+  return hasTrailingDot ? `${integerPart}.` : integerPart;
 };
 const sanitizeAmountInput = (value: string, integerDigits = 5, decimalDigits = 2) => {
   const cleaned = value.replace(/[^0-9.]/g, '');
   const [integerPartRaw, ...rest] = cleaned.split('.');
   const integerPart = integerPartRaw.slice(0, integerDigits);
+  const hasTrailingDot = cleaned.endsWith('.') && rest.length === 1 && rest[0] === '';
 
   if (rest.length === 0) return integerPart;
 
   const decimalPart = rest.join('').slice(0, decimalDigits);
-  return decimalPart ? `${integerPart}.${decimalPart}` : integerPart;
+  if (decimalPart) {
+    return `${integerPart}.${decimalPart}`;
+  }
+
+  return hasTrailingDot ? `${integerPart}.` : integerPart;
 };
 const getEntryTypeCode = (entryTypeValue?: string) => entryTypeValue === 'DIRECT_LOADED_VEHICLE' ? 'RL' : entryTypeValue === 'LOCATION_SAMPLE' ? 'LS' : 'MS';
 const normalizeCaseInsensitiveList = (values: Array<string | null | undefined>) => {
@@ -377,6 +454,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   const [paddySupervisors, setPaddySupervisors] = useState<any[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const isAdminOrOwner = ['admin', 'owner'].includes(String(user?.role || '').toLowerCase());
+  const canEditOffer = ['admin', 'owner', 'manager'].includes(String(user?.role || '').toLowerCase());
 
   const fetchSupervisors = async () => {
     try {
@@ -401,7 +479,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
 
   useEffect(() => {
     if (isRiceMode) {
-      setLoadingView('FINAL_LOADING');
+      // setLoadingView('FINAL_LOADING');
     }
   }, [isRiceMode]);
 
@@ -785,6 +863,27 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
     const raw = creator?.fullName || creator?.username || '';
     return raw ? toTitleCase(raw) : '-';
   };
+  const getCollectedByDisplay = (entry: SampleEntry) => {
+    const creatorLabel = getCreatorLabel(entry);
+    const fallbackCollector = [
+      entry.sampleCollectedBy,
+      ...(((entry as any)?.resampleCollectedHistory || []) as string[]),
+      ...(((entry as any)?.sampleCollectedHistory || []) as string[])
+    ].find((value) => typeof value === 'string' && value.trim() !== '');
+    const collectorLabel = getCollectorLabel(fallbackCollector || null);
+    const isResample = String((entry as any)?.lotSelectionDecision || '').toUpperCase() === 'FAIL' || Boolean((entry as any)?.resampledLotId);
+    const isGivenToOffice = Boolean((entry as any)?.sampleGivenToOffice) || isResample;
+    if (isGivenToOffice) {
+      const primary = creatorLabel !== '-' ? creatorLabel : collectorLabel;
+      const secondary = collectorLabel !== '-' && collectorLabel !== primary ? collectorLabel : null;
+      return { primary, secondary, highlightPrimary: true };
+    }
+    return {
+      primary: collectorLabel !== '-' ? collectorLabel : creatorLabel,
+      secondary: null,
+      highlightPrimary: false
+    };
+  };
   const buildOrderedNameList = (values: Array<string | null | undefined>) => values
     .map((value) => String(value || '').trim())
     .filter(Boolean);
@@ -829,7 +928,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
 
     if (isGivenToOffice && names.length > 0) {
       const officeNames = buildOrderedNameList([getCreatorLabel(entry), getCollectorLabel(names[0])]);
-      return renderIndexedNames(officeNames, (name) => name, { primaryColor: '#0f766e', secondaryColor: '#1f2937' });
+      return renderIndexedNames(officeNames, (name) => name, { primaryColor: '#7e22ce', secondaryColor: '#1f2937' });
     }
 
     return renderIndexedNames(names, getCollectorLabel);
@@ -843,6 +942,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
       ? (qualityModalEntry?.sampleCollectedHistory || [])
       : (qualityModalEntry?.sampleCollectedBy ? [qualityModalEntry.sampleCollectedBy] : [])
   );
+  const qualityModalHasCookingHistory = hasCookingActivity(qualityModalEntry);
 
   const modalOffering = selectedEntry?.offering || {};
   const modalRateType = managerData.baseRateType || modalOffering.baseRateType || 'PD_LOOSE';
@@ -859,7 +959,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   const modalPaymentEnabled = modalOffering.paymentConditionEnabled != null ? !!modalOffering.paymentConditionEnabled : !!managerData.paymentConditionEnabled;
   const modalSuteMissing = !!selectedEntry && modalOffering.suteEnabled === false && !parseFloat(modalOffering.finalSute ?? '') && !parseFloat(modalOffering.sute ?? '');
   const modalMoistureMissing = !!selectedEntry && modalOffering.moistureEnabled === false && !parseFloat(modalOffering.moistureValue ?? '');
-  const modalHamaliMissing = !!selectedEntry && modalOffering.hamaliEnabled === false && !hasValue(modalOffering.hamali ?? modalOffering.hamaliPerKg);
+  const modalHamaliMissing = !!selectedEntry && modalOffering.hamaliEnabled === false && !hasPositiveAmount(modalOffering.hamali ?? modalOffering.hamaliPerKg);
   const modalBrokerageMissing = !!selectedEntry && modalOffering.brokerageEnabled === false && !parseFloat(modalOffering.brokerage ?? '');
   const modalLfMissing = !!selectedEntry && modalHasLf && modalOffering.lfEnabled === false && !parseFloat(modalOffering.lf ?? '');
   const modalCdMissing = !!selectedEntry && !!modalOffering.cdEnabled && !parseFloat(modalOffering.cdValue ?? '');
@@ -867,15 +967,15 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   const modalPaymentMissing = !!selectedEntry && modalPaymentEnabled && !parseInt(modalOffering.paymentConditionValue ?? '', 10);
   const modalEgbMissing = !!selectedEntry && modalHasEgb && modalOffering.egbType === 'purchase' && !parseFloat(modalOffering.egbValue ?? '');
   const modalMissingFields = [
-    modalSuteMissing ? `Sute (${formatSuteUnitLabel(modalSuteUnit)})` : '',
+    modalSuteMissing ? 'Sute' : '',
     modalMoistureMissing ? 'Moisture (%)' : '',
     modalHamaliMissing ? `Hamali (${formatChargeUnitLabel(modalHamaliUnit)})` : '',
     modalBrokerageMissing ? `Brokerage (${formatChargeUnitLabel(modalBrokerageUnit)})` : '',
     modalLfMissing ? `LF (${formatChargeUnitLabel(modalLfUnit)})` : '',
-    modalCdMissing ? `CD (${modalCdUnit === 'percentage' ? 'Percent' : 'Lumps'})` : '',
-    modalBankLoanMissing ? `Bank Loan (${formatChargeUnitLabel(modalBankLoanUnit)})` : '',
-    modalPaymentMissing ? `Payment (${modalPaymentUnit === 'month' ? 'Month' : 'Days'})` : '',
-    modalEgbMissing ? `EGB (${modalOffering.egbType === 'purchase' ? 'Purchase' : 'Mill'})` : ''
+    modalCdMissing ? 'CD' : '',
+    modalBankLoanMissing ? 'Bank Loan' : '',
+    modalPaymentMissing ? 'Payment' : '',
+    modalEgbMissing ? 'EGB' : ''
   ].filter(Boolean);
   const modalCardStyle: React.CSSProperties = { borderRadius: '8px', padding: '10px', border: '1px solid #d7e1ea', background: '#f8fafc', minWidth: 0 };
   const modalEditableCardStyle: React.CSSProperties = { ...modalCardStyle, border: '1px solid #f5c542', background: '#fffdf3' };
@@ -884,7 +984,19 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
   const modalReadonlyValueStyle: React.CSSProperties = { minHeight: '34px', borderRadius: '6px', border: '1px solid #d0d7de', background: '#eef2f7', padding: '7px 9px', fontSize: '12px', color: '#334155', display: 'flex', alignItems: 'center', fontWeight: 600 };
   const modalInputStyle: React.CSSProperties = { width: '100%', padding: '7px 9px', border: '1px solid #3498db', borderRadius: '6px', fontSize: '12px', boxSizing: 'border-box', background: '#fff' };
   const modalInlineSelectStyle: React.CSSProperties = { width: '110px', padding: '7px 9px', border: '1px solid #3498db', borderRadius: '6px', fontSize: '12px', background: '#fff' };
-  const modalTagStyle = (editable: boolean): React.CSSProperties => ({ display: 'inline-flex', alignItems: 'center', fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '999px', marginBottom: '6px', background: editable ? '#fff3cd' : '#dbeafe', color: editable ? '#8a6400' : '#1d4ed8' });
+  const modalOfferActorMeta = getOfferActorMeta(modalOffering);
+  const modalTagStyle = (editable: boolean): React.CSSProperties => ({
+    display: 'inline-flex',
+    alignItems: 'center',
+    fontSize: '10px',
+    fontWeight: 700,
+    padding: '2px 6px',
+    borderRadius: '999px',
+    marginBottom: '6px',
+    background: editable ? '#fff3cd' : modalOfferActorMeta.style.background,
+    color: editable ? '#8a6400' : modalOfferActorMeta.style.color,
+    border: editable ? '1px solid #f9d976' : modalOfferActorMeta.style.border
+  });
 
   return (
     <div>
@@ -998,7 +1110,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                               const effectiveHamaliValue = o.hamali ?? o.hamaliPerKg;
                               const suteMissing = o.suteEnabled === false && !parseFloat(o.finalSute) && !parseFloat(o.sute);
                               const mstMissing = o.moistureEnabled === false && !parseFloat(o.moistureValue);
-                              const hamaliMissing = o.hamaliEnabled === false && !hasValue(effectiveHamaliValue);
+                              const hamaliMissing = o.hamaliEnabled === false && !hasPositiveAmount(effectiveHamaliValue);
                               const bkrgMissing = o.brokerageEnabled === false && !parseFloat(o.brokerage);
                               const lfMissing = hasLf && o.lfEnabled === false && !parseFloat(o.lf);
                               const cdMissing = !!o.cdEnabled && !parseFloat(o.cdValue);
@@ -1008,49 +1120,19 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                               const missingFieldLabels = [
                                 suteMissing ? 'Sute' : '',
                                 mstMissing ? 'Moist' : '',
-                                bkrgMissing ? `Brokerage (${formatChargeUnitLabel(o.brokerageUnit)})` : '',
-                                lfMissing ? `LF (${formatChargeUnitLabel(o.lfUnit)})` : '',
-                                hamaliMissing ? `Hamali (${formatChargeUnitLabel(o.hamaliUnit)})` : '',
+                                bkrgMissing ? 'Brokerage' : '',
+                                lfMissing ? 'LF' : '',
+                                hamaliMissing ? 'Hamali' : '',
                                 cdMissing ? 'CD' : '',
                                 bankLoanMissing ? 'BL' : '',
                                 paymentMissing ? 'Payment' : ''
                               ].filter(Boolean);
                               const qualityData = entry.qualityParameters || {};
-                              const hasQualityReport = !!entry.qualityParameters?.id || !!entry.qualityParameters?.reportedBy;
-                              const toTs = (value?: string | null) => {
-                                if (!value) return 0;
-                                const time = new Date(value).getTime();
-                                return Number.isFinite(time) ? time : 0;
-                              };
-                              const lotSelectionTs = toTs(entry.lotSelectionAt);
                               const qualityAttemptsBase = [...(entry.qualityAttemptDetails || [])].sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0));
-                              const resampleAttempts = Math.max(qualityAttemptsBase.length, Number(entry.qualityReportAttempts || 0));
-                              const isResampleCase = entry.lotSelectionDecision === 'FAIL' || resampleAttempts > 1;
-                              let qualityAttempts = [...qualityAttemptsBase];
-                              if (isResampleCase && qualityAttempts.length < 2 && hasQualityReport) {
-                                const qualityCurrentTs = toTs(qualityData.updatedAt || qualityData.createdAt);
-                                const qualityHistoryCount = (entry.qualityReportHistory || []).filter(Boolean).length;
-                                const hasSecondQualityFromCurrent =
-                                  (lotSelectionTs > 0 && qualityCurrentTs >= lotSelectionTs)
-                                  || (lotSelectionTs === 0 && qualityHistoryCount >= 2);
-                                if (hasSecondQualityFromCurrent) {
-                                  qualityAttempts = [
-                                    ...qualityAttempts.filter((item) => item.attemptNo !== 2),
-                                    {
-                                      attemptNo: 2,
-                                      reportedBy: qualityData.reportedBy,
-                                      createdAt: qualityData.updatedAt || qualityData.createdAt,
-                                      moisture: qualityData.moisture,
-                                      dryMoisture: qualityData.dryMoisture,
-                                      cutting1: qualityData.cutting1,
-                                      bend1: qualityData.bend1,
-                                      mix: qualityData.mix,
-                                      sk: qualityData.sk,
-                                      grainsCount: qualityData.grainsCount
-                                    }
-                                  ].sort((a, b) => (a.attemptNo || 0) - (b.attemptNo || 0));
-                                }
-                              }
+                              const qualityAttempts = [...qualityAttemptsBase];
+                              const hasQualityReport = qualityAttempts.length > 0 || !!qualityData.reportedBy || !!qualityData.id;
+                              const isResampleCase = qualityAttempts.length > 1 || String(entry.lotSelectionDecision || '').toUpperCase() === 'FAIL';
+                              const lotSelectionTs = toTs(entry.lotSelectionAt || entry.updatedAt || entry.createdAt || '');
                               const historyReportedNames = buildOrderedNameList(
                                 (entry.qualityReportHistory || [])
                               );
@@ -1151,6 +1233,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                               const finalRateValue = o.finalBaseRate ?? o.offerBaseRateValue;
                               const finalRateUnit = unitLabel(o.baseRateUnit || 'per_bag');
                               const cellStyle = (missing: boolean): React.CSSProperties => ({ border: '1px solid #000', padding: '3px 4px', textAlign: 'left', background: missing ? '#fff3cd' : rowBg, color: missing ? '#856404' : '#333', fontWeight: missing ? '700' : '400', fontSize: '12px' });
+                              const offerActorMeta = getOfferActorMeta(o);
 
                               if (isRiceMode) {
                                 return (
@@ -1228,16 +1311,41 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                       {Array.from({ length: adjustedAttemptCount }, (_, idx) => idx + 1).map((attemptNo) => {
                                         const attempt = qualityAttempts.find((item) => item.attemptNo === attemptNo);
                                         const isLatestAttempt = attemptNo === adjustedAttemptCount;
+                                        
+                                        // Quality Type (Done/Pending)
                                         const stateLabel = attempt ? 'Done' : (isLatestAttempt ? 'Pending' : '-');
                                         const stateStyle = stateLabel === 'Done'
-                                          ? { background: '#e8f5e9', color: '#2e7d32', border: '1px solid #c8e6c9' }
+                                          ? { background: '#c8e6c9', color: '#2e7d32' }
                                           : stateLabel === 'Pending'
-                                              ? { background: '#fff3cd', color: '#856404', border: '1px solid #ffeeba' }
-                                              : { background: '#f3f4f6', color: '#6b7280', border: '1px solid #e5e7eb' };
+                                              ? { background: '#fff8e1', color: '#f57f17' }
+                                              : { background: '#f5f5f5', color: '#666' };
+
+                                        // Quality Decision (Pass/Fail) - LINE-WISE per attempt
+                                        let decisionLabel = 'Pending';
+                                        const normalizedDecision = String(entry.lotSelectionDecision || '').toUpperCase();
+                                        const isHardFailed = String(entry.workflowStatus || '').toUpperCase() === 'FAILED';
+                                        
+                                        if (normalizedDecision === 'FAIL') decisionLabel = 'Fail';
+                                        else if (normalizedDecision.startsWith('PASS') || normalizedDecision === 'SOLDOUT') decisionLabel = 'Pass';
+
+                                        // LINE-WISE: 1st attempt stays Pass, only failed attempt shows Fail
+                                        if (isHardFailed && adjustedAttemptCount > 1) {
+                                           decisionLabel = isLatestAttempt ? 'Fail' : 'Pass';
+                                        } else if (normalizedDecision === 'FAIL' && !isHardFailed) {
+                                           if (adjustedAttemptCount <= 1) {
+                                              decisionLabel = 'Pass';
+                                           } else {
+                                              decisionLabel = isLatestAttempt ? 'Pending' : 'Pass';
+                                           }
+                                        }
+                                        const decisionStyle = decisionLabel === 'Pass' ? { background: '#a5d6a7', color: '#1b5e20' }
+                                          : decisionLabel === 'Fail' ? { background: '#ffcdd2', color: '#b71c1c' }
+                                          : { background: '#ffe0b2', color: '#e65100' };
+
                                         return (
                                           <div key={`${entry.id}-quality-${attemptNo}`} style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
-                                            <span style={{ fontWeight: 700, color: '#1f2937' }}>{getQualityAttemptLabel(attemptNo)}</span>
-                                            <span style={{ ...stateStyle, padding: '1px 6px', borderRadius: '10px', fontSize: '10px', fontWeight: 700, whiteSpace: 'nowrap' }}>{stateLabel}</span>
+                                            <span style={{ ...stateStyle, padding: '2px 6px', borderRadius: '10px', fontSize: '9px', fontWeight: 700, whiteSpace: 'nowrap' }}>{stateLabel}</span>
+                                            {stateLabel !== '-' && <span style={{ ...decisionStyle, padding: '2px 6px', borderRadius: '10px', fontSize: '9px', fontWeight: 700, whiteSpace: 'nowrap' }}>{decisionLabel}</span>}
                                           </div>
                                         );
                                       })}
@@ -1273,23 +1381,28 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                       ) : (
                                         Array.from({ length: adjustedAttemptCount }, (_, idx) => idx + 1).map((attemptNo) => {
                                           const attempt = cookingMap.get(attemptNo);
-                                          const statusText = attempt?.status || (attemptNo === adjustedAttemptCount ? 'Pending' : '-');
+                                          const rawStatus = attempt?.status || (attemptNo === adjustedAttemptCount ? 'Pending' : '-');
+                                          const statusText = rawStatus ? toTitleCase(rawStatus.toLowerCase()) : 'Pending';
+
                                           const statusStyle = statusText === 'Pass'
-                                            ? { background: '#e8f5e9', color: '#2e7d32', border: '1px solid #c8e6c9' }
+                                            ? { background: '#a5d6a7', color: '#1b5e20' }
                                             : statusText === 'Medium'
-                                              ? { background: '#ffe0b2', color: '#f39c12', border: '1px solid #ffd699' }
+                                              ? { background: '#ffe0b2', color: '#f39c12' }
                                             : statusText === 'Fail'
-                                              ? { background: '#fce4ec', color: '#c62828', border: '1px solid #f8bbd0' }
-                                              : statusText === 'Recheck'
-                                                ? { background: '#fff3cd', color: '#856404', border: '1px solid #ffeeba' }
-                                                : statusText === 'Pending'
-                                                  ? { background: '#fff3cd', color: '#856404', border: '1px solid #ffeeba' }
-                                                  : { background: '#f3f4f6', color: '#6b7280', border: '1px solid #e5e7eb' };
+                                              ? { background: '#ffcdd2', color: '#b71c1c' }
+                                              : statusText === 'Recheck' || statusText === 'Rechecking'
+                                                ? { background: '#e3f2fd', color: '#1565c0' }
+                                                : statusText === 'Resample' || statusText === 'Resampling'
+                                                  ? { background: '#fff3e0', color: '#ef6c00' }
+                                                  : statusText === 'Pending'
+                                                    ? { background: '#ffe0b2', color: '#e65100' }
+                                                    : { background: '#f3f4f6', color: '#6b7280' };
+
                                           return (
                                             <div key={`${entry.id}-cooking-${attemptNo}`}>
                                               <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
-                                                <span style={{ fontWeight: 700, color: '#1f2937' }}>{getAttemptLabel(attemptNo)}</span>
-                                                <span style={{ ...statusStyle, padding: '1px 6px', borderRadius: '10px', fontSize: '10px', fontWeight: 700, whiteSpace: 'nowrap' }}>{statusText}</span>
+                                                <span style={{ fontSize: '9px', fontWeight: '800', color: '#334155' }}>{attemptNo === 1 ? '1st S.' : attemptNo === 2 ? '2nd S.' : `${attemptNo}th S.` }</span>
+                                                <span style={{ ...statusStyle, padding: '2px 6px', borderRadius: '10px', fontSize: '9px', fontWeight: 700, whiteSpace: 'nowrap' }}>{statusText}</span>
                                               </div>
                                               {attempt?.remarks ? (
                                                 <div
@@ -1331,7 +1444,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                   {/* Disabled resample block */}
                                   <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', background: '#fafcff' }}>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'stretch' }}>
-                                      <div style={{ fontSize: '10px', fontWeight: 800, color: '#155724', background: '#d4edda', border: '1px solid #c3e6cb', borderRadius: '4px', padding: '2px 4px' }}>Admin Added</div>
+                                      <div style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', padding: '2px 4px', ...offerActorMeta.style }}>{offerActorMeta.label}</div>
                                       <div style={{ fontSize: '10px', fontWeight: 700, color: needsFill ? '#856404' : '#155724', background: needsFill ? '#fff3cd' : '#d4edda', border: needsFill ? '1px solid #ffeeba' : '1px solid #c3e6cb', borderRadius: '4px', padding: '2px 4px', lineHeight: '1.25' }}>
                                         {needsFill ? `Missing: ${compactStatusText(missingFieldLabels)}` : 'Manager Added'}
                                       </div>
@@ -1368,7 +1481,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                           {!hasQualityReport ? 'Quality Pending' : (needsFill ? 'Fill Values' : 'View/Edit')}
                                         </button>
                                       )}
-                                      {isAdminOrOwner && (
+                                      {canEditOffer && (
                                         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', justifyContent: 'center' }}>
                                           <button
                                             onClick={() => handleOpenOfferEdit(entry)}
@@ -1376,12 +1489,14 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                                           >
                                             Edit Offer
                                           </button>
-                                          <button
-                                            onClick={() => handleOpenFinalEdit(entry)}
-                                            style={{ padding: '3px 6px', background: '#27ae60', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '10px', cursor: 'pointer', fontWeight: 700 }}
-                                          >
-                                            Edit Final
-                                          </button>
+                                          {isAdminOrOwner && (
+                                            <button
+                                              onClick={() => handleOpenFinalEdit(entry)}
+                                              style={{ padding: '3px 6px', background: '#27ae60', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '10px', cursor: 'pointer', fontWeight: 700 }}
+                                            >
+                                              Edit Final
+                                            </button>
+                                          )}
                                         </div>
                                       )}
                                     </div>
@@ -1405,146 +1520,312 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
         <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} style={{ padding: '6px 12px', borderRadius: '4px', cursor: page >= totalPages ? 'not-allowed' : 'pointer', background: page >= totalPages ? '#f5f5f5' : 'white' }}>Next</button>
       </div>
 
-      {qualityHistoryModal.open && qualityModalEntry && (
-        <div
-          onClick={() => setQualityHistoryModal({ open: false, entry: null })}
-          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300, padding: '16px' }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{ width: '100%', maxWidth: '860px', maxHeight: '88vh', overflowY: 'auto', background: '#fff', borderRadius: '12px', boxShadow: '0 24px 60px rgba(0,0,0,0.32)', padding: '16px' }}
-          >
-            <div style={{ fontSize: '18px', fontWeight: 800, color: '#1f2937', marginBottom: '8px' }}>Quality Sampling History</div>
-            <div style={{ fontSize: '12px', color: '#475569', marginBottom: '12px', lineHeight: '1.5' }}>
-              Party: <b>{toTitleCase(qualityModalEntry.partyName) || '-'}</b> | Variety: <b>{toTitleCase(qualityModalEntry.variety) || '-'}</b> | Location: <b>{toTitleCase(qualityModalEntry.location) || '-'}</b>{(() => {
-                const smellAttempt = [...qualityAttemptDetails].reverse().find((attempt) => attempt.smellHas || (attempt.smellType && String(attempt.smellType).trim()));
-                if (!smellAttempt) return '';
-                return ` | Smell: ${toTitleCase(smellAttempt.smellType || 'Yes')}`;
-              })()}
+      {qualityHistoryModal.open && qualityModalEntry && (() => {
+        const qpAll = qualityAttemptDetails;
+        const hasCooking = qualityModalHasCookingHistory;
+        const useAttemptComparisonLayout = qualityAttemptDetails.length > 1;
+        const useCompactQualityModal = qpAll.length <= 1;
+
+        const trimZeros = (raw: string) => raw.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '');
+        const displayVal = (rawVal: any, numericVal: any, enabled = true) => {
+          if (!enabled) return null;
+          const raw = rawVal != null ? String(rawVal).trim() : '';
+          if (raw !== '') return raw;
+          if (numericVal == null || numericVal === '') return null;
+          const rawNumeric = String(numericVal).trim();
+          if (!rawNumeric) return null;
+          const num = Number(rawNumeric);
+          if (!Number.isFinite(num) || num === 0) return null;
+          return trimZeros(rawNumeric);
+        };
+        const isProvided = (rawVal: any, numericVal: any) => {
+          const raw = rawVal != null ? String(rawVal).trim() : '';
+          if (raw !== '') return true;
+          if (numericVal == null || numericVal === '') return false;
+          const rawNumeric = String(numericVal).trim();
+          if (!rawNumeric) return false;
+          const num = Number(rawNumeric);
+          return Number.isFinite(num) && num !== 0;
+        };
+        const isEnabled = (flag: any, rawVal: any, numericVal: any) => (
+          flag === true || (flag == null && isProvided(rawVal, numericVal))
+        );
+
+        const QItem = ({ label, value }: { label: string; value: React.ReactNode }) => {
+          const isBold = ['Grains Count', 'Paddy WB'].includes(label);
+          return (
+            <div style={{ background: '#f8f9fa', padding: '6px 8px', borderRadius: '6px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
+              <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '2px', fontWeight: '600', textTransform: 'uppercase' }}>{label}</div>
+              <div style={{ fontSize: '12px', fontWeight: isBold ? '800' : '700', color: isBold ? '#000' : '#2c3e50' }}>{value || '-'}</div>
             </div>
-            {qualityModalCollectedNames.length > 0 ? (
-              <div style={{ marginBottom: '12px', border: '1px solid #d1d5db', borderRadius: '10px', padding: '10px', background: '#f8fafc' }}>
-                <div style={{ fontSize: '11px', fontWeight: 800, color: '#64748b', marginBottom: '6px' }}>Sample Collected By</div>
-                {renderIndexedNames(qualityModalCollectedNames, getCollectorLabel)}
+          );
+        };
+
+        const getAttemptLabelPopup = (attemptNo: number, idx: number) => {
+          const num = attemptNo || idx + 1;
+          if (num === 1) return '1st Sample';
+          if (num === 2) return '2nd Sample';
+          if (num === 3) return '3rd Sample';
+          return `${num}th Sample`;
+        };
+
+        return (
+          <div
+            onClick={() => setQualityHistoryModal({ open: false, entry: null })}
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, padding: '20px 16px' }}
+          >
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{ backgroundColor: 'white', borderRadius: '8px', width: useCompactQualityModal ? 'min(520px, 95vw)' : 'min(1080px, 94vw)', maxWidth: useCompactQualityModal ? '95vw' : '94vw', maxHeight: '88vh', overflowY: 'auto', overflowX: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}
+            >
+              {/* Header */}
+              <div style={{
+                background: qualityModalEntry.entryType === 'DIRECT_LOADED_VEHICLE'
+                  ? '#1565c0'
+                  : qualityModalEntry.entryType === 'LOCATION_SAMPLE'
+                    ? '#e67e22'
+                    : '#4caf50',
+                padding: '16px 20px', borderRadius: '8px 8px 0 0', color: 'white', position: 'relative'
+              }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', marginBottom: '4px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: '800', opacity: 0.9, textAlign: 'left' }}>
+                    {new Date(qualityModalEntry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })}
+                  </div>
+                  <div style={{ fontSize: '18px', fontWeight: '900', letterSpacing: '1.5px', textTransform: 'uppercase', textAlign: 'center' }}>
+                    {qualityModalEntry.entryType === 'DIRECT_LOADED_VEHICLE' ? 'Ready Lorry' : qualityModalEntry.entryType === 'LOCATION_SAMPLE' ? 'Location Sample' : 'Mill Sample'}
+                  </div>
+                  <div></div>
+                </div>
+                <div style={{
+                  fontSize: '28px', fontWeight: '900', letterSpacing: '-0.5px', marginTop: '4px',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '85%'
+                }}>
+                  {toTitleCase(qualityModalEntry.brokerName) || '-'}
+                </div>
+                <button onClick={() => setQualityHistoryModal({ open: false, entry: null })} style={{
+                  position: 'absolute', top: '16px', right: '16px',
+                  background: 'rgba(255,255,255,0.25)', border: 'none', borderRadius: '50%',
+                  width: '32px', height: '32px', cursor: 'pointer', fontSize: '16px',
+                  color: 'white', fontWeight: '900', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', transition: 'all 0.2s',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+                }}>✕</button>
               </div>
-            ) : null}
 
-            {qualityAttemptDetails.length === 0 ? (
-              <div style={{ fontSize: '13px', color: '#64748b' }}>No quality attempt history found.</div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {(() => {
-                  const getAttemptLabel = (attemptNo: number, idx: number) => {
-                    const num = attemptNo || idx + 1;
-                    if (num === 1) return '1st Sample';
-                    if (num === 2) return '2nd Sample';
-                    if (num === 3) return '3rd Sample';
-                    return `${num}th Sample`;
-                  };
-                  const fields = [
-                    { label: 'Reported By', value: (attempt: QualityAttemptDetail) => attempt.reportedBy ? toSentenceCase(attempt.reportedBy) : '-' },
-                    { label: 'Reported At', value: (attempt: QualityAttemptDetail) => attempt.createdAt ? new Date(attempt.createdAt).toLocaleString('en-IN') : '-' },
-                    { label: 'Moisture', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.moisture, '%') },
-                    { label: 'Dry Moisture', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.dryMoisture, '%') },
-                    { label: 'Cutting', value: (attempt: QualityAttemptDetail) => formatCuttingPair(attempt) },
-                    { label: 'Bend', value: (attempt: QualityAttemptDetail) => formatBendPair(attempt) },
-                    { label: 'Grains Count', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.grainsCount) },
-                    { label: 'Mix', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.mix) },
-                    { label: 'S Mix', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.mixS) },
-                    { label: 'L Mix', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.mixL) },
-                    { label: 'Kandu', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.kandu) },
-                    { label: 'Oil', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.oil) },
-                    { label: 'SK', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.sk) },
-                    { label: 'WB-R', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.wbR) },
-                    { label: 'WB-BK', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.wbBk) },
-                    { label: 'WB-T', value: (attempt: QualityAttemptDetail) => formatAttemptValue(attempt.wbT) },
-                    { label: 'Smell', value: (attempt: QualityAttemptDetail) => attempt.smellHas || (attempt.smellType && String(attempt.smellType).trim()) ? toTitleCase(attempt.smellType || 'Yes') : '-' },
-                    { label: 'Paddy WB', value: (attempt: QualityAttemptDetail) => attempt.paddyWb != null && attempt.paddyWb !== '' ? `${toNumberText(attempt.paddyWb)} gms` : '-' },
-                    ...(qualityModalEntry.entryType === 'RICE_SAMPLE'
-                      ? [{ label: 'Grams', value: (attempt: QualityAttemptDetail) => attempt.gramsReport || '-' }]
-                      : [])
-                  ].filter((field) => {
-                    if (field.label === 'Reported By' || field.label === 'Reported At') return true;
-                    return qualityAttemptDetails.some((attempt) => isMeaningfulCellValue(field.value(attempt)));
-                  });
-
-                  if (qualityAttemptDetails.length > 1) {
-                    return (
-                      <div style={{ overflowX: 'auto', width: '100%' }}>
-                        <table style={{ width: '100%', minWidth: '1180px', borderCollapse: 'collapse', background: '#fff' }}>
-                          <thead>
-                            <tr>
-                              <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', width: '120px' }} />
-                              {fields.map((field) => (
-                                <th
-                                  key={field.label}
-                                  style={{ textAlign: 'center', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', fontSize: '11px', color: '#64748b', fontWeight: 700, whiteSpace: 'nowrap' }}
-                                >
-                                  {field.label}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {qualityAttemptDetails.map((attempt, idx) => (
-                              <tr key={`${qualityModalEntry.id}-quality-attempt-row-${attempt.attemptNo || idx}`} style={{ borderBottom: '1px solid #edf2f7' }}>
-                                <td style={{ padding: '10px', fontWeight: 800, color: '#111827', whiteSpace: 'nowrap' }}>
-                                  <div>{getAttemptLabel(attempt.attemptNo || 0, idx)}</div>
-                                  <div style={{ fontSize: '10px', color: '#64748b', fontWeight: 700, marginTop: '4px' }}>
-                                    {attempt.createdAt ? new Date(attempt.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
-                                  </div>
-                                </td>
-                                {fields.map((field) => (
-                                  <td
-                                    key={`${qualityModalEntry.id}-quality-attempt-row-${attempt.attemptNo || idx}-${field.label}`}
-                                    style={{ padding: '10px', textAlign: 'center', fontSize: '12px', color: '#1f2937', fontWeight: 600, whiteSpace: 'nowrap' }}
-                                  >
-                                    {field.value(attempt)}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {qualityAttemptDetails.map((attempt) => (
-                        <div key={`${qualityModalEntry.id}-quality-attempt-${attempt.attemptNo}`} style={{ border: '1px solid #d1d5db', borderRadius: '10px', padding: '12px', background: '#f8fafc' }}>
-                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#1e3a8a', marginBottom: '10px' }}>
-                            {getAttemptLabel(attempt.attemptNo || 0, 0)}
+              {/* Body Content */}
+              <div style={{ padding: '24px', backgroundColor: '#fff', borderBottomLeftRadius: '10px', borderBottomRightRadius: '10px', position: 'relative' }}>
+                {/* Basic Info Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+                  {[
+                    ['Date', new Date(qualityModalEntry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })],
+                    ['Total Bags', qualityModalEntry.bags?.toLocaleString('en-IN')],
+                    ['Packaging', `${qualityModalEntry.packaging || '75'} Kg`],
+                    ['Variety', toTitleCase(qualityModalEntry.variety || '-')],
+                  ].map(([label, value], i) => (
+                    <div key={i} style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                      <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+                      <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b' }}>{value || '-'}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '24px' }}>
+                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Party Name</div>
+                    <div style={{ fontSize: '15px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {toTitleCase(qualityModalEntry.partyName) || '-'}
+                    </div>
+                  </div>
+                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Location</div>
+                    <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{toTitleCase(qualityModalEntry.location || '-')}</div>
+                  </div>
+                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '4px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Collected By</div>
+                    {(() => {
+                      const collectedByDisplay = getCollectedByDisplay(qualityModalEntry);
+                      if (collectedByDisplay.secondary) {
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', overflow: 'hidden' }}>
+                            <span style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#9c27b0' : '#1e293b' }}>
+                              {collectedByDisplay.primary}
+                            </span>
+                            <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: '800' }}>/</span>
+                            <span style={{ fontSize: '12px', fontWeight: '600', color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {collectedByDisplay.secondary}
+                            </span>
                           </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
-                            {fields.map((field) => (
-                              <div key={`${qualityModalEntry.id}-quality-attempt-${attempt.attemptNo}-${field.label}`} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', background: '#fff', padding: '10px' }}>
-                                <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748b', marginBottom: '4px' }}>{field.label}</div>
-                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#111827', lineHeight: '1.35', wordBreak: 'break-word' }}>{field.value(attempt)}</div>
-                              </div>
+                        );
+                      }
+                      return (
+                        <div style={{ fontSize: '14px', fontWeight: '700', color: collectedByDisplay.highlightPrimary ? '#9c27b0' : '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {collectedByDisplay.primary}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {/* Quality Parameters */}
+                <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: '#e67e22', borderBottom: '2px solid #e67e22', paddingBottom: '6px' }}>🔬 Quality Parameters</h4>
+                {qpAll.length === 0 ? (
+                  <div style={{ color: '#999', textAlign: 'center', padding: '12px', fontSize: '12px' }}>No quality data</div>
+                ) : useAttemptComparisonLayout ? (() => {
+                  const buildAttemptRows = (qp: any) => {
+                    const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
+                    const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
+                    const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
+                    const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
+                    const smellHasVal = qp.smellHas ?? (qualityModalEntry as any).smellHas;
+                    const smellTypeVal = qp.smellType ?? (qualityModalEntry as any).smellType;
+                    return [
+                      [
+                        { label: 'Sample Collected By', value: toTitleCase(qp.sampleCollectedBy || qualityModalEntry.sampleCollectedBy || '-'), span: 2 },
+                        { label: 'Sample Reported By', value: toTitleCase(qp.reportedBy || '-'), span: 2 },
+                        { label: 'Reported At', value: qp.updatedAt || qp.createdAt ? new Date(qp.updatedAt || qp.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-', span: 2 },
+                        { label: 'Moisture', value: (() => { const val = displayVal(qp.moistureRaw, qp.moisture); return val ? `${val}%` : '-'; })() },
+                        { label: 'Cutting', value: (() => { const cut1 = displayVal(qp.cutting1Raw, qp.cutting1); const cut2 = displayVal(qp.cutting2Raw, qp.cutting2); return cut1 && cut2 ? `${cut1}x${cut2}` : '-'; })() },
+                        { label: 'Bend', value: (() => { const bend1 = displayVal(qp.bend1Raw, qp.bend1); const bend2 = displayVal(qp.bend2Raw, qp.bend2); return bend1 && bend2 ? `${bend1}x${bend2}` : '-'; })() }
+                      ],
+                      [
+                        { label: 'Grains Count', value: (() => { const val = displayVal(qp.grainsCountRaw, qp.grainsCount); return val ? `(${val})` : '-'; })() },
+                        { label: 'Mix', value: displayVal(qp.mixRaw, qp.mix) || '-' },
+                        { label: 'S Mix', value: displayVal(qp.mixSRaw, qp.mixS, smixOn) || '-' },
+                        { label: 'L Mix', value: displayVal(qp.mixLRaw, qp.mixL, lmixOn) || '-' },
+                        { label: 'Kandu', value: displayVal(qp.kanduRaw, qp.kandu) || '-' }
+                      ],
+                      [
+                        { label: 'Oil', value: displayVal(qp.oilRaw, qp.oil) || '-' },
+                        { label: 'SK', value: displayVal(qp.skRaw, qp.sk) || '-' },
+                        { label: 'WB-R', value: displayVal(qp.wbRRaw, qp.wbR, wbOn) || '-' },
+                        { label: 'WB-BK', value: displayVal(qp.wbBkRaw, qp.wbBk, wbOn) || '-' },
+                        { label: 'WB-T', value: displayVal(qp.wbTRaw, qp.wbT, wbOn) || '-' }
+                      ],
+                      [
+                        { label: 'Paddy WB', value: displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn) || '-', span: 5 }
+                      ].filter((item) => item.value && item.value !== '-'),
+                      [
+                        { label: 'Smell', value: (smellHasVal || (smellTypeVal && String(smellTypeVal).trim())) ? toTitleCase(smellTypeVal || 'Yes') : '-' }
+                      ].filter((item) => item.value && item.value !== '-')
+                    ];
+                  };
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {qpAll.map((qp: any, idx: number) => (
+                        <div key={`${qualityModalEntry.id}-${qp.attemptNo || idx}-cards`} style={{ display: 'grid', gridTemplateColumns: '160px minmax(0, 1fr)', gap: '16px', alignItems: 'start' }}>
+                          <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '10px', minHeight: '62px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: '900', color: '#9a3412' }}>
+                            {getAttemptLabelPopup(qp.attemptNo, idx)}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            {buildAttemptRows(qp).map((row, rowIdx) => (
+                              row.length > 0 ? (
+                                <div key={`${qp.attemptNo || idx}-row-${rowIdx}`} style={{ display: 'grid', gridTemplateColumns: rowIdx === 0 ? 'repeat(9, minmax(0, 1fr))' : `repeat(${row.length}, minmax(0, 1fr))`, gap: '12px' }}>
+                                  {row.map((item, cardIdx) => (
+                                    <div key={`${qp.attemptNo || idx}-${item.label}-${cardIdx}`} style={{ gridColumn: rowIdx === 0 ? `span ${item.span || 1}` : undefined }}>
+                                      <QItem label={item.label} value={item.value} />
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null
                             ))}
                           </div>
                         </div>
                       ))}
                     </div>
                   );
-                })()}
-              </div>
-            )}
+                })() : (() => {
+                  // Single attempt — vertical card grid (matches right side of user's image)
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {qpAll.map((qp: any, idx: number) => {
+                        const smixOn = isEnabled(qp.smixEnabled, qp.mixSRaw, qp.mixS);
+                        const lmixOn = isEnabled(qp.lmixEnabled, qp.mixLRaw, qp.mixL);
+                        const paddyOn = isEnabled(qp.paddyWbEnabled, qp.paddyWbRaw, qp.paddyWb);
+                        const wbOn = isProvided(qp.wbRRaw, qp.wbR) || isProvided(qp.wbBkRaw, qp.wbBk);
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
-              <button
-                type="button"
-                onClick={() => setQualityHistoryModal({ open: false, entry: null })}
-                style={{ padding: '7px 14px', borderRadius: '6px', border: 'none', background: '#334155', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
-              >
-                Close
-              </button>
+                        const row1: { label: string; value: React.ReactNode }[] = [];
+                        const moistureVal = displayVal(qp.moistureRaw, qp.moisture);
+                        if (moistureVal) row1.push({ label: 'Moisture', value: `${moistureVal}%` });
+                        const cut1 = displayVal(qp.cutting1Raw, qp.cutting1);
+                        const cut2 = displayVal(qp.cutting2Raw, qp.cutting2);
+                        if (cut1 && cut2) row1.push({ label: 'Cutting', value: `${cut1}x${cut2}` });
+                        const bend1 = displayVal(qp.bend1Raw, qp.bend1);
+                        const bend2 = displayVal(qp.bend2Raw, qp.bend2);
+                        if (bend1 && bend2) row1.push({ label: 'Bend', value: `${bend1}x${bend2}` });
+                        const grainsVal = displayVal(qp.grainsCountRaw, qp.grainsCount);
+                        if (grainsVal) row1.push({ label: 'Grains Count', value: `(${grainsVal})` });
+
+                        const row2: { label: string; value: React.ReactNode }[] = [];
+                        const mixVal = displayVal(qp.mixRaw, qp.mix);
+                        const mixSVal = displayVal(qp.mixSRaw, qp.mixS, smixOn);
+                        const mixLVal = displayVal(qp.mixLRaw, qp.mixL, lmixOn);
+                        if (mixVal) row2.push({ label: 'Mix', value: mixVal });
+                        if (mixSVal) row2.push({ label: 'S Mix', value: mixSVal });
+                        if (mixLVal) row2.push({ label: 'L Mix', value: mixLVal });
+
+                        const row3: { label: string; value: React.ReactNode }[] = [];
+                        const kanduVal = displayVal(qp.kanduRaw, qp.kandu);
+                        const oilVal = displayVal(qp.oilRaw, qp.oil);
+                        const skVal = displayVal(qp.skRaw, qp.sk);
+                        if (kanduVal) row3.push({ label: 'Kandu', value: kanduVal });
+                        if (oilVal) row3.push({ label: 'Oil', value: oilVal });
+                        if (skVal) row3.push({ label: 'SK', value: skVal });
+
+                        const row4: { label: string; value: React.ReactNode }[] = [];
+                        const row5: { label: string; value: React.ReactNode }[] = [];
+                        const wbRVal = displayVal(qp.wbRRaw, qp.wbR, wbOn);
+                        const wbBkVal = displayVal(qp.wbBkRaw, qp.wbBk, wbOn);
+                        const wbTVal = displayVal(qp.wbTRaw, qp.wbT, wbOn);
+                        if (wbRVal) row4.push({ label: 'WB-R', value: wbRVal });
+                        if (wbBkVal) row4.push({ label: 'WB-BK', value: wbBkVal });
+                        if (wbTVal) row4.push({ label: 'WB-T', value: wbTVal });
+                        const hasPaddyWb = displayVal(qp.paddyWbRaw, qp.paddyWb, paddyOn);
+                        if (hasPaddyWb) {
+                          row5.push({
+                            label: 'Paddy WB',
+                            value: (
+                              <span style={{
+                                color: Number(qp.paddyWb) < 50 ? '#d32f2f' : (Number(qp.paddyWb) <= 50.5 ? '#f39c12' : '#1b5e20'),
+                                fontWeight: '800'
+                              }}>
+                                {hasPaddyWb}
+                              </span>
+                            )
+                          });
+                        }
+                        const smellHasVal = qp.smellHas ?? (qualityModalEntry as any).smellHas;
+                        const smellTypeVal = qp.smellType ?? (qualityModalEntry as any).smellType;
+                        if (smellHasVal || (smellTypeVal && String(smellTypeVal).trim())) row5.push({ label: 'Smell', value: toTitleCase(smellTypeVal || 'Yes') });
+
+                        return (
+                          <div key={idx}>
+                            {row1.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row1.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row1.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                            {row2.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row2.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row2.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                            {row3.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row3.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row3.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                            {row4.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row4.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row4.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                            {row5.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: `repeat(${row5.length}, 1fr)`, gap: '8px', marginBottom: '8px' }}>{row5.map(item => <QItem key={item.label} label={item.label} value={item.value} />)}</div>}
+                            {qp.reportedBy && (
+                              <div style={{ marginTop: '8px', borderTop: '1px dashed #e2e8f0', paddingTop: '6px' }}>
+                                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600', textAlign: 'center' }}>
+                                  Reported By: <span style={{ color: '#1e293b', fontWeight: '800', fontSize: '13px' }}>{toTitleCase(qp.reportedBy)}</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+                <button onClick={() => setQualityHistoryModal({ open: false, entry: null })}
+                  style={{ marginTop: '16px', width: '100%', padding: '8px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: '4px', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}>
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {remarksPopup.isOpen && (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
@@ -1581,34 +1862,54 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                 return <> | Smell: <b>{toTitleCase(smellTypeValue || 'Yes')}</b></>;
               })()}
             </div>
-            <div style={{ marginBottom: '12px', background: modalMissingFields.length > 0 ? '#fff7db' : '#e8f5e9', border: modalMissingFields.length > 0 ? '1px solid #f3d37b' : '1px solid #c8e6c9', borderRadius: '8px', padding: '9px 10px' }}>
-              <div style={{ fontSize: '11px', fontWeight: 800, color: modalMissingFields.length > 0 ? '#8a6400' : '#2e7d32', marginBottom: '4px' }}>
-                {modalMissingFields.length > 0 ? 'Manager Missing Fields' : 'All Values Already Added'}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '10px' }}>
+              <div style={{ flex: 1, background: modalMissingFields.length > 0 ? '#fff7db' : '#e8f5e9', border: modalMissingFields.length > 0 ? '1px solid #f3d37b' : '1px solid #c8e6c9', borderRadius: '8px', padding: '9px 10px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 800, color: modalMissingFields.length > 0 ? '#8a6400' : '#2e7d32', marginBottom: '4px' }}>
+                  {modalMissingFields.length > 0 ? 'Manager Missing Fields' : 'All Values Already Added'}
+                </div>
+                <div style={{ fontSize: '12px', color: '#334155', lineHeight: '1.4' }}>
+                  {modalMissingFields.length > 0 ? modalMissingFields.join('  |  ') : 'This lot already has all manager-side values.'}
+                </div>
               </div>
-              <div style={{ fontSize: '12px', color: '#334155', lineHeight: '1.4' }}>
-                {modalMissingFields.length > 0 ? modalMissingFields.join('  |  ') : 'This lot already has all manager-side values.'}
-              </div>
+              {(() => {
+                const role = modalOffering.createdByRole;
+                if (role === 'manager') {
+                  return (
+                    <div style={{ padding: '6px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: 800, backgroundColor: '#ffedd5', color: '#9a3412', border: '1px solid #fdba74', whiteSpace: 'nowrap' }}>
+                      Manager Added
+                    </div>
+                  );
+                }
+                if (role === 'admin' || role === 'owner') {
+                  return (
+                    <div style={{ padding: '6px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: 800, backgroundColor: '#dcfce7', color: '#15803d', border: '1px solid #bbf7d0', whiteSpace: 'nowrap' }}>
+                      Admin Added
+                    </div>
+                  );
+                }
+                return null;
+              })()}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.2fr) repeat(2, minmax(160px, 1fr))', gap: '10px', marginBottom: '10px' }}>
               <div style={modalCardStyle}>
-                <span style={modalTagStyle(false)}>Admin Added</span>
+                <span style={modalTagStyle(false)}>{modalOfferActorMeta.label}</span>
                 <label style={modalLabelStyle}>Final Rate</label>
                 <div style={modalMetaStyle}>{formatRateTypeLabel(modalRateType)} | {formatRateUnitLabel(modalBaseRateUnit)}</div>
-                <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.finalBaseRate ?? modalOffering.offerBaseRateValue) ? `Rs ${toNumberText(modalOffering.finalBaseRate ?? modalOffering.offerBaseRateValue)}` : '-'}</div>
+                <div style={modalReadonlyValueStyle}>{formatManagerRateValue(modalOffering.finalBaseRate ?? modalOffering.offerBaseRateValue, modalBaseRateUnit)}</div>
               </div>
               <div style={modalSuteMissing ? modalEditableCardStyle : modalCardStyle}>
-                <span style={modalTagStyle(modalSuteMissing)}>{modalSuteMissing ? 'Manager Add' : 'Admin Added'}</span>
+                <span style={modalTagStyle(modalSuteMissing)}>{modalSuteMissing ? 'Manager Add' : modalOfferActorMeta.label}</span>
                 <label style={modalLabelStyle}>Sute</label>
                 <div style={modalMetaStyle}>{formatSuteUnitLabel(modalSuteUnit)}</div>
                 {modalSuteMissing ? (
                   <input type="text" inputMode="decimal" value={managerData.sute} onChange={(e) => setManagerData({ ...managerData, sute: sanitizeAmountInput(e.target.value) })} style={modalInputStyle} placeholder="Enter sute" />
                 ) : (
-                  <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.finalSute ?? modalOffering.sute) ? toNumberText(modalOffering.finalSute ?? modalOffering.sute) : 'No'}</div>
+                  <div style={modalReadonlyValueStyle}>{formatManagerSuteValue(modalOffering.finalSute ?? modalOffering.sute, modalSuteUnit)}</div>
                 )}
               </div>
               <div style={modalMoistureMissing ? modalEditableCardStyle : modalCardStyle}>
-                <span style={modalTagStyle(modalMoistureMissing)}>{modalMoistureMissing ? 'Manager Add' : 'Admin Added'}</span>
+                <span style={modalTagStyle(modalMoistureMissing)}>{modalMoistureMissing ? 'Manager Add' : modalOfferActorMeta.label}</span>
                 <label style={modalLabelStyle}>Moisture</label>
                 <div style={modalMetaStyle}>Percent</div>
                 {modalMoistureMissing ? (
@@ -1621,7 +1922,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(160px, 1fr))', gap: '10px', marginBottom: '10px' }}>
               <div style={modalHamaliMissing ? modalEditableCardStyle : modalCardStyle}>
-                <span style={modalTagStyle(modalHamaliMissing)}>{modalHamaliMissing ? 'Manager Add' : 'Admin Added'}</span>
+                <span style={modalTagStyle(modalHamaliMissing)}>{modalHamaliMissing ? 'Manager Add' : modalOfferActorMeta.label}</span>
                 <label style={modalLabelStyle}>Hamali</label>
                 <div style={modalMetaStyle}>{modalOffering.hamaliEnabled === false ? `Pending from manager | ${formatChargeUnitLabel(modalHamaliUnit)}` : formatChargeUnitLabel(modalHamaliUnit)}</div>
                 {modalHamaliMissing ? (
@@ -1629,17 +1930,15 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                     <input type="text" inputMode="decimal" value={managerData.hamali} onChange={(e) => setManagerData({ ...managerData, hamali: sanitizeAmountInput(e.target.value) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter hamali" />
                     <select value={managerData.hamaliUnit} onChange={(e) => setManagerData({ ...managerData, hamaliUnit: e.target.value })} style={modalInlineSelectStyle}>
                       <option value="per_bag">Per Bag</option>
-                      <option value="per_kg">Per Kg</option>
-                      <option value="per_ton">Per Ton</option>
                       <option value="per_quintal">Per Quintal</option>
                     </select>
                   </div>
                 ) : (
-                  <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.hamali || modalOffering.hamaliPerKg) ? fmtVal(modalOffering.hamali || modalOffering.hamaliPerKg, modalHamaliUnit) : 'No'}</div>
+                  <div style={modalReadonlyValueStyle}>{formatManagerChargeValue(modalOffering.hamali ?? modalOffering.hamaliPerKg, modalHamaliUnit)}</div>
                 )}
               </div>
               <div style={modalBrokerageMissing ? modalEditableCardStyle : modalCardStyle}>
-                <span style={modalTagStyle(modalBrokerageMissing)}>{modalBrokerageMissing ? 'Manager Add' : 'Admin Added'}</span>
+                <span style={modalTagStyle(modalBrokerageMissing)}>{modalBrokerageMissing ? 'Manager Add' : modalOfferActorMeta.label}</span>
                 <label style={modalLabelStyle}>Brokerage</label>
                 <div style={modalMetaStyle}>{modalOffering.brokerageEnabled === false ? `Pending from manager | ${formatChargeUnitLabel(modalBrokerageUnit)}` : formatChargeUnitLabel(modalBrokerageUnit)}</div>
                 {modalBrokerageMissing ? (
@@ -1647,17 +1946,15 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                     <input type="text" inputMode="decimal" value={managerData.brokerage} onChange={(e) => setManagerData({ ...managerData, brokerage: sanitizeAmountInput(e.target.value) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter brokerage" />
                     <select value={managerData.brokerageUnit} onChange={(e) => setManagerData({ ...managerData, brokerageUnit: e.target.value })} style={modalInlineSelectStyle}>
                       <option value="per_bag">Per Bag</option>
-                      <option value="per_kg">Per Kg</option>
-                      <option value="per_ton">Per Ton</option>
                       <option value="per_quintal">Per Quintal</option>
                     </select>
                   </div>
                 ) : (
-                  <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.brokerage) ? fmtVal(modalOffering.brokerage, modalBrokerageUnit) : 'No'}</div>
+                  <div style={modalReadonlyValueStyle}>{formatManagerChargeValue(modalOffering.brokerage, modalBrokerageUnit)}</div>
                 )}
               </div>
               <div style={modalHasLf ? (modalLfMissing ? modalEditableCardStyle : modalCardStyle) : modalCardStyle}>
-                <span style={modalTagStyle(modalHasLf && modalLfMissing)}>{modalHasLf ? (modalLfMissing ? 'Manager Add' : 'Admin Added') : 'Not Applicable'}</span>
+                <span style={modalTagStyle(modalHasLf && modalLfMissing)}>{modalHasLf ? (modalLfMissing ? 'Manager Add' : modalOfferActorMeta.label) : 'Not Applicable'}</span>
                 <label style={modalLabelStyle}>LF</label>
                 <div style={modalMetaStyle}>{modalHasLf ? (modalOffering.lfEnabled === false ? `Pending from manager | ${formatChargeUnitLabel(modalLfUnit)}` : formatChargeUnitLabel(modalLfUnit)) : 'Not applicable for MD/WB'}</div>
                 {modalHasLf ? (
@@ -1666,13 +1963,11 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                       <input type="text" inputMode="decimal" value={managerData.lf} onChange={(e) => setManagerData({ ...managerData, lf: sanitizeAmountInput(e.target.value) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter LF" />
                       <select value={managerData.lfUnit} onChange={(e) => setManagerData({ ...managerData, lfUnit: e.target.value })} style={modalInlineSelectStyle}>
                         <option value="per_bag">Per Bag</option>
-                        <option value="per_kg">Per Kg</option>
-                        <option value="per_ton">Per Ton</option>
                         <option value="per_quintal">Per Quintal</option>
                       </select>
                     </div>
                   ) : (
-                    <div style={modalReadonlyValueStyle}>{hasValue(modalOffering.lf) ? fmtVal(modalOffering.lf, modalLfUnit) : 'No'}</div>
+                    <div style={modalReadonlyValueStyle}>{formatManagerChargeValue(modalOffering.lf, modalLfUnit)}</div>
                   )
                 ) : (
                   <div style={modalReadonlyValueStyle}>Not Applicable</div>
@@ -1683,7 +1978,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
             {!isRiceMode && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(160px, 1fr))', gap: '10px', marginBottom: '10px' }}>
                 <div style={modalCdMissing ? modalEditableCardStyle : modalCardStyle}>
-                  <span style={modalTagStyle(modalCdMissing)}>{modalCdMissing ? 'Manager Add' : 'Admin Added'}</span>
+                  <span style={modalTagStyle(modalCdMissing)}>{modalCdMissing ? 'Manager Add' : modalOfferActorMeta.label}</span>
                   <label style={modalLabelStyle}>CD</label>
                   <div style={modalMetaStyle}>{modalOffering.cdEnabled ? formatChargeUnitLabel(modalCdUnit) : 'No'}</div>
                   {modalCdMissing ? (
@@ -1695,11 +1990,11 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                       </select>
                     </div>
                   ) : (
-                    <div style={modalReadonlyValueStyle}>{modalOffering.cdEnabled ? (hasValue(modalOffering.cdValue) ? (modalCdUnit === 'percentage' ? `${toNumberText(modalOffering.cdValue)} %` : `${toNumberText(modalOffering.cdValue)} Lumps`) : 'Pending') : 'No'}</div>
+                    <div style={modalReadonlyValueStyle}>{modalOffering.cdEnabled ? (hasValue(modalOffering.cdValue) ? `${toNumberText(modalOffering.cdValue)} | ${modalCdUnit === 'percentage' ? 'Percent' : 'Lumps'}` : 'Pending') : 'No'}</div>
                   )}
                 </div>
                 <div style={modalBankLoanMissing ? modalEditableCardStyle : modalCardStyle}>
-                  <span style={modalTagStyle(modalBankLoanMissing)}>{modalBankLoanMissing ? 'Manager Add' : 'Admin Added'}</span>
+                  <span style={modalTagStyle(modalBankLoanMissing)}>{modalBankLoanMissing ? 'Manager Add' : modalOfferActorMeta.label}</span>
                   <label style={modalLabelStyle}>Bank Loan</label>
                   <div style={modalMetaStyle}>{modalOffering.bankLoanEnabled ? formatChargeUnitLabel(modalBankLoanUnit) : 'No'}</div>
                   {modalBankLoanMissing ? (
@@ -1707,17 +2002,15 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                       <input type="text" inputMode="decimal" value={managerData.bankLoanValue} onChange={(e) => setManagerData({ ...managerData, bankLoanValue: sanitizeAmountInput(e.target.value, 8) })} style={{ ...modalInputStyle, flex: 1 }} placeholder="Enter bank loan" />
                       <select value={managerData.bankLoanUnit} onChange={(e) => setManagerData({ ...managerData, bankLoanUnit: e.target.value })} style={modalInlineSelectStyle}>
                         <option value="per_bag">Per Bag</option>
-                        <option value="per_kg">Per Kg</option>
-                        <option value="per_ton">Per Ton</option>
                         <option value="per_quintal">Per Quintal</option>
                       </select>
                     </div>
                   ) : (
-                    <div style={modalReadonlyValueStyle}>{modalOffering.bankLoanEnabled ? formatRsWithUnitLabel(modalOffering.bankLoanValue, modalBankLoanUnit) : 'No'}</div>
+                    <div style={modalReadonlyValueStyle}>{modalOffering.bankLoanEnabled ? formatManagerRateValue(modalOffering.bankLoanValue, modalBankLoanUnit) : 'No'}</div>
                   )}
                 </div>
                 <div style={modalPaymentMissing ? modalEditableCardStyle : modalCardStyle}>
-                  <span style={modalTagStyle(modalPaymentMissing)}>{modalPaymentMissing ? 'Manager Add' : 'Admin Added'}</span>
+                  <span style={modalTagStyle(modalPaymentMissing)}>{modalPaymentMissing ? 'Manager Add' : modalOfferActorMeta.label}</span>
                   <label style={modalLabelStyle}>Payment Condition</label>
                   <div style={modalMetaStyle}>{modalPaymentEnabled ? (modalPaymentUnit === 'month' ? 'Month' : 'Days') : 'No'}</div>
                   {modalPaymentMissing ? (
@@ -1737,7 +2030,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px', marginBottom: '14px' }}>
               <div style={modalHasEgb && modalEgbMissing ? modalEditableCardStyle : modalCardStyle}>
-                <span style={modalTagStyle(modalHasEgb && modalEgbMissing)}>{modalHasEgb ? (modalEgbMissing ? 'Manager Add' : 'Admin Added') : 'Not Applicable'}</span>
+                <span style={modalTagStyle(modalHasEgb && modalEgbMissing)}>{modalHasEgb ? (modalEgbMissing ? 'Manager Add' : modalOfferActorMeta.label) : 'Not Applicable'}</span>
                 <label style={modalLabelStyle}>EGB</label>
                 <div style={modalMetaStyle}>
                   {!modalHasEgb
@@ -1770,8 +2063,8 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
       )}
 
       {showOfferEditModal && selectedEntry && (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300, padding: '12px' }}>
-          <div style={{ backgroundColor: '#fff', borderRadius: '12px', padding: '10px', width: '100%', maxWidth: '520px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300, padding: '20px 16px' }}>
+          <div style={{ backgroundColor: '#fff', borderRadius: '12px', padding: '10px', width: '100%', maxWidth: '520px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 16px 40px rgba(0,0,0,0.32)' }}>
             <h3 style={{ marginTop: 0, marginBottom: '8px', fontSize: '16px', fontWeight: '700', color: '#2c3e50', borderBottom: '3px solid #3498db', paddingBottom: '8px', textAlign: 'center' }}>
               {selectedEntry.brokerName}
             </h3>
@@ -1779,39 +2072,42 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
               Bags: <b>{selectedEntry.bags}</b> | Pkg: <b>{selectedEntry.packaging || '75'} Kg</b> | Party: <b>{toTitleCase(selectedEntry.partyName) || (selectedEntry.entryType === 'DIRECT_LOADED_VEHICLE' ? selectedEntry.lorryNumber?.toUpperCase() : '-')}</b> | Paddy Location: <b>{toTitleCase(selectedEntry.location) || '-'}</b> | Variety: <b>{toTitleCase(selectedEntry.variety) || '-'}</b>
             </div>
             <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '10px', color: '#2563eb' }}>Edit Offer Rate</div>
-            <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
-              <select
-                value={offerEditData.baseRateType}
-                onChange={(e) => setOfferEditData({ ...offerEditData, baseRateType: e.target.value })}
-                style={{ flex: '0 0 120px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}
-              >
-                <option value="PD_WB">PD/WB</option>
-                <option value="PD_LOOSE">PD/Loose</option>
-                <option value="MD_WB">MD/WB</option>
-                <option value="MD_LOOSE">MD/Loose</option>
-              </select>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={offerEditData.offerBaseRateValue}
-                onChange={(e) => setOfferEditData({ ...offerEditData, offerBaseRateValue: sanitizeAmountInput(e.target.value) })}
-                placeholder="Offer Rate"
-                style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '8px', fontSize: '11px', marginBottom: '10px', flexWrap: 'wrap' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <input type="radio" name="offerEditUnit" checked={offerEditData.baseRateUnit === 'per_bag'} onChange={() => setOfferEditData({ ...offerEditData, baseRateUnit: 'per_bag' })} />
-                Per Bag
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <input type="radio" name="offerEditUnit" checked={offerEditData.baseRateUnit === 'per_quintal'} onChange={() => setOfferEditData({ ...offerEditData, baseRateUnit: 'per_quintal' })} />
-                Per Qtl
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <input type="radio" name="offerEditUnit" checked={offerEditData.baseRateUnit === 'per_kg'} onChange={() => setOfferEditData({ ...offerEditData, baseRateUnit: 'per_kg' })} />
-                Per Kg
-              </label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) 118px', gap: '10px', marginBottom: '10px', alignItems: 'start' }}>
+              <div>
+                <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Offer Rate</label>
+                <div style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={offerEditData.offerBaseRateValue}
+                    onChange={(e) => setOfferEditData({ ...offerEditData, offerBaseRateValue: sanitizeAmountInput(e.target.value) })}
+                    placeholder="Rate"
+                    style={{ flex: 1, padding: '7px 9px', border: '1px solid #2563eb', borderRadius: '6px', fontSize: '12px', minWidth: '100px' }}
+                  />
+                  <select
+                    value={offerEditData.baseRateType}
+                    onChange={(e) => setOfferEditData({ ...offerEditData, baseRateType: e.target.value as any })}
+                    style={{ width: '100px', flexShrink: 0, padding: '7px 9px', border: '1px solid #2563eb', borderRadius: '6px', fontSize: '11px', cursor: 'pointer' }}
+                  >
+                    <option value="PD_WB">PD/WB</option>
+                    <option value="PD_LOOSE">PD/Loose</option>
+                    <option value="MD_WB">MD/WB</option>
+                    <option value="MD_LOOSE">MD/Loose</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Rate Uses</label>
+                <select
+                  value={offerEditData.baseRateUnit}
+                  onChange={(e) => setOfferEditData({ ...offerEditData, baseRateUnit: e.target.value })}
+                  style={{ width: '100%', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}
+                >
+                  <option value="per_bag">Per Bag</option>
+                  <option value="per_quintal">Per Quintal</option>
+                  <option value="per_kg">Per Kg</option>
+                </select>
+              </div>
             </div>
             {offerEditData.baseRateUnit === 'per_kg' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px', fontSize: '11px' }}>
@@ -1827,7 +2123,7 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
               </div>
             )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', marginBottom: '10px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '126px minmax(0, 1fr)', gap: '10px', marginBottom: '10px' }}>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Sute</label>
                 <input
@@ -1862,35 +2158,35 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '8px', marginBottom: '10px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '10px' }}>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Hamali</label>
-                <div style={{ display: 'flex', gap: '6px', fontSize: '11px', marginBottom: '4px' }}>
-                  <label><input type="radio" name="offerEditHamali" checked={offerEditData.hamaliEnabled} onChange={() => setOfferEditData({ ...offerEditData, hamaliEnabled: true })} /> Yes</label>
-                  <label><input type="radio" name="offerEditHamali" checked={!offerEditData.hamaliEnabled} onChange={() => setOfferEditData({ ...offerEditData, hamaliEnabled: false, hamaliValue: '' })} /> No</label>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '11px', marginBottom: '4px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><input type="radio" name="offerEditHamali" checked={offerEditData.hamaliEnabled} onChange={() => setOfferEditData({ ...offerEditData, hamaliEnabled: true })} /> Yes</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><input type="radio" name="offerEditHamali" checked={!offerEditData.hamaliEnabled} onChange={() => setOfferEditData({ ...offerEditData, hamaliEnabled: false, hamaliValue: '' })} /> No</label>
                 </div>
                 {offerEditData.hamaliEnabled && (
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <input type="text" inputMode="decimal" value={offerEditData.hamaliValue} onChange={(e) => setOfferEditData({ ...offerEditData, hamaliValue: sanitizeAmountInput(e.target.value) })} style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }} placeholder="Amount" />
-                    <select value={offerEditData.hamaliUnit} onChange={(e) => setOfferEditData({ ...offerEditData, hamaliUnit: e.target.value })} style={{ width: '90px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
+                    <select value={offerEditData.hamaliUnit} onChange={(e) => setOfferEditData({ ...offerEditData, hamaliUnit: e.target.value })} style={{ width: '100px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
                       <option value="per_bag">Per Bag</option>
-                      <option value="per_quintal">Per Qtl</option>
+                      <option value="per_quintal">Per Quintal</option>
                     </select>
                   </div>
                 )}
               </div>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Brokerage</label>
-                <div style={{ display: 'flex', gap: '6px', fontSize: '11px', marginBottom: '4px' }}>
-                  <label><input type="radio" name="offerEditBrokerage" checked={offerEditData.brokerageEnabled} onChange={() => setOfferEditData({ ...offerEditData, brokerageEnabled: true })} /> Yes</label>
-                  <label><input type="radio" name="offerEditBrokerage" checked={!offerEditData.brokerageEnabled} onChange={() => setOfferEditData({ ...offerEditData, brokerageEnabled: false, brokerageValue: '' })} /> No</label>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '11px', marginBottom: '4px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><input type="radio" name="offerEditBrokerage" checked={offerEditData.brokerageEnabled} onChange={() => setOfferEditData({ ...offerEditData, brokerageEnabled: true })} /> Yes</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><input type="radio" name="offerEditBrokerage" checked={!offerEditData.brokerageEnabled} onChange={() => setOfferEditData({ ...offerEditData, brokerageEnabled: false, brokerageValue: '' })} /> No</label>
                 </div>
                 {offerEditData.brokerageEnabled && (
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <input type="text" inputMode="decimal" value={offerEditData.brokerageValue} onChange={(e) => setOfferEditData({ ...offerEditData, brokerageValue: sanitizeAmountInput(e.target.value) })} style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }} placeholder="Amount" />
-                    <select value={offerEditData.brokerageUnit} onChange={(e) => setOfferEditData({ ...offerEditData, brokerageUnit: e.target.value })} style={{ width: '90px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
+                    <select value={offerEditData.brokerageUnit} onChange={(e) => setOfferEditData({ ...offerEditData, brokerageUnit: e.target.value })} style={{ width: '100px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
                       <option value="per_bag">Per Bag</option>
-                      <option value="per_quintal">Per Qtl</option>
+                      <option value="per_quintal">Per Quintal</option>
                     </select>
                   </div>
                 )}
@@ -1899,16 +2195,16 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                 <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>LF</label>
                 {hasLfForRateType(offerEditData.baseRateType) ? (
                   <>
-                    <div style={{ display: 'flex', gap: '6px', fontSize: '11px', marginBottom: '4px' }}>
-                      <label><input type="radio" name="offerEditLf" checked={offerEditData.lfEnabled} onChange={() => setOfferEditData({ ...offerEditData, lfEnabled: true })} /> Yes</label>
-                      <label><input type="radio" name="offerEditLf" checked={!offerEditData.lfEnabled} onChange={() => setOfferEditData({ ...offerEditData, lfEnabled: false, lfValue: '' })} /> No</label>
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '11px', marginBottom: '4px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><input type="radio" name="offerEditLf" checked={offerEditData.lfEnabled} onChange={() => setOfferEditData({ ...offerEditData, lfEnabled: true })} /> Yes</label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><input type="radio" name="offerEditLf" checked={!offerEditData.lfEnabled} onChange={() => setOfferEditData({ ...offerEditData, lfEnabled: false, lfValue: '' })} /> No</label>
                     </div>
                     {offerEditData.lfEnabled && (
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <input type="text" inputMode="decimal" value={offerEditData.lfValue} onChange={(e) => setOfferEditData({ ...offerEditData, lfValue: sanitizeAmountInput(e.target.value) })} style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }} placeholder="Amount" />
-                        <select value={offerEditData.lfUnit} onChange={(e) => setOfferEditData({ ...offerEditData, lfUnit: e.target.value })} style={{ width: '90px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
+                        <select value={offerEditData.lfUnit} onChange={(e) => setOfferEditData({ ...offerEditData, lfUnit: e.target.value })} style={{ width: '100px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
                           <option value="per_bag">Per Bag</option>
-                          <option value="per_quintal">Per Qtl</option>
+                          <option value="per_quintal">Per Quintal</option>
                         </select>
                       </div>
                     )}
@@ -2003,8 +2299,8 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
       )}
 
       {showFinalEditModal && selectedEntry && (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300, padding: '12px' }}>
-          <div style={{ backgroundColor: '#fff', borderRadius: '12px', padding: '10px', width: '100%', maxWidth: '520px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300, padding: '20px 16px' }}>
+          <div style={{ backgroundColor: '#fff', borderRadius: '12px', padding: '10px', width: '100%', maxWidth: '520px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 16px 40px rgba(0,0,0,0.32)' }}>
             <h3 style={{ marginTop: 0, marginBottom: '8px', fontSize: '16px', fontWeight: '700', color: '#2c3e50', borderBottom: '3px solid #27ae60', paddingBottom: '8px', textAlign: 'center' }}>
               {selectedEntry.brokerName}
             </h3>
@@ -2012,30 +2308,29 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
               Bags: <b>{selectedEntry.bags}</b> | Pkg: <b>{selectedEntry.packaging || '75'} Kg</b> | Party: <b>{toTitleCase(selectedEntry.partyName) || (selectedEntry.entryType === 'DIRECT_LOADED_VEHICLE' ? selectedEntry.lorryNumber?.toUpperCase() : '-')}</b> | Paddy Location: <b>{toTitleCase(selectedEntry.location) || '-'}</b> | Variety: <b>{toTitleCase(selectedEntry.variety) || '-'}</b>
             </div>
             <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '10px', color: '#16a34a' }}>Edit Final Rate</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '8px', marginBottom: '10px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Final Rate</label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={finalEditData.finalBaseRate}
-                  onChange={(e) => setFinalEditData({ ...finalEditData, finalBaseRate: sanitizeAmountInput(e.target.value) })}
-                  placeholder="Final Rate"
-                  style={{ width: '100%', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Rate Unit</label>
-                <select
-                  value={finalEditData.baseRateUnit}
-                  onChange={(e) => setFinalEditData({ ...finalEditData, baseRateUnit: e.target.value })}
-                  style={{ width: '100%', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}
-                >
-                  <option value="per_bag">Per Bag</option>
-                  <option value="per_quintal">Per Qtl</option>
-                  <option value="per_kg">Per Kg</option>
-                  <option value="per_ton">Per Ton</option>
-                </select>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={finalEditData.finalBaseRate}
+                    onChange={(e) => setFinalEditData({ ...finalEditData, finalBaseRate: sanitizeAmountInput(e.target.value) })}
+                    placeholder="Rate"
+                    style={{ flex: 1, padding: '7px 9px', border: '1px solid #27ae60', borderRadius: '6px', fontSize: '12px' }}
+                  />
+                  <select
+                    value={finalEditData.baseRateUnit}
+                    onChange={(e) => setFinalEditData({ ...finalEditData, baseRateUnit: e.target.value })}
+                    style={{ width: '100px', flexShrink: 0, padding: '7px 9px', border: '1px solid #27ae60', borderRadius: '6px', fontSize: '11px', cursor: 'pointer' }}
+                  >
+                    <option value="PD_WB">PD/WB</option>
+                    <option value="PD_LOOSE">PD/Loose</option>
+                    <option value="MD_WB">MD/WB</option>
+                    <option value="MD_LOOSE">MD/Loose</option>
+                  </select>
+                </div>
               </div>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Final Price</label>
@@ -2045,12 +2340,12 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                   value={finalEditData.finalPrice}
                   onChange={(e) => setFinalEditData({ ...finalEditData, finalPrice: sanitizeAmountInput(e.target.value) })}
                   placeholder="Final Price"
-                  style={{ width: '100%', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}
+                  style={{ width: '100%', padding: '7px 9px', border: '1px solid #27ae60', borderRadius: '6px', fontSize: '12px' }}
                 />
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '8px', marginBottom: '10px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '126px minmax(0, 1fr)', gap: '8px', marginBottom: '10px' }}>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', display: 'block' }}>Final Sute</label>
                 <input type="text" inputMode="decimal" value={finalEditData.finalSute} onChange={(e) => setFinalEditData({ ...finalEditData, finalSute: sanitizeAmountInput(e.target.value) })} style={{ width: '100%', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }} placeholder="Sute" />
@@ -2075,9 +2370,9 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                 {finalEditData.hamaliEnabled && (
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <input type="text" inputMode="decimal" value={finalEditData.hamali} onChange={(e) => setFinalEditData({ ...finalEditData, hamali: sanitizeAmountInput(e.target.value) })} style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }} placeholder="Amount" />
-                    <select value={finalEditData.hamaliUnit} onChange={(e) => setFinalEditData({ ...finalEditData, hamaliUnit: e.target.value })} style={{ width: '90px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
+                    <select value={finalEditData.hamaliUnit} onChange={(e) => setFinalEditData({ ...finalEditData, hamaliUnit: e.target.value })} style={{ width: '100px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
                       <option value="per_bag">Per Bag</option>
-                      <option value="per_quintal">Per Qtl</option>
+                      <option value="per_quintal">Per Quintal</option>
                     </select>
                   </div>
                 )}
@@ -2091,9 +2386,9 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                 {finalEditData.brokerageEnabled && (
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <input type="text" inputMode="decimal" value={finalEditData.brokerage} onChange={(e) => setFinalEditData({ ...finalEditData, brokerage: sanitizeAmountInput(e.target.value) })} style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }} placeholder="Amount" />
-                    <select value={finalEditData.brokerageUnit} onChange={(e) => setFinalEditData({ ...finalEditData, brokerageUnit: e.target.value })} style={{ width: '90px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
+                    <select value={finalEditData.brokerageUnit} onChange={(e) => setFinalEditData({ ...finalEditData, brokerageUnit: e.target.value })} style={{ width: '100px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
                       <option value="per_bag">Per Bag</option>
-                      <option value="per_quintal">Per Qtl</option>
+                      <option value="per_quintal">Per Quintal</option>
                     </select>
                   </div>
                 )}
@@ -2109,9 +2404,9 @@ const LoadingLots: React.FC<LoadingLotsProps> = ({ entryType, excludeEntryType }
                     {finalEditData.lfEnabled && (
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <input type="text" inputMode="decimal" value={finalEditData.lf} onChange={(e) => setFinalEditData({ ...finalEditData, lf: sanitizeAmountInput(e.target.value) })} style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }} placeholder="Amount" />
-                        <select value={finalEditData.lfUnit} onChange={(e) => setFinalEditData({ ...finalEditData, lfUnit: e.target.value })} style={{ width: '90px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
+                        <select value={finalEditData.lfUnit} onChange={(e) => setFinalEditData({ ...finalEditData, lfUnit: e.target.value })} style={{ width: '100px', padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: '12px' }}>
                           <option value="per_bag">Per Bag</option>
-                          <option value="per_quintal">Per Qtl</option>
+                          <option value="per_quintal">Per Quintal</option>
                         </select>
                       </div>
                     )}

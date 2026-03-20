@@ -129,7 +129,7 @@ const WORKFLOW_TRANSITIONS = [
   {
     fromStatus: 'FINAL_REPORT',
     toStatus: 'LOT_SELECTION',
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: ['staff', 'quality_supervisor', 'physical_supervisor', 'paddy_supervisor', 'admin', 'manager'],
     requiredData: ['cookingReport']
   },
   {
@@ -160,6 +160,12 @@ const WORKFLOW_TRANSITIONS = [
     fromStatus: 'LOT_ALLOTMENT',
     toStatus: 'QUALITY_CHECK',
     allowedRoles: ['staff', 'quality_supervisor', 'physical_supervisor', 'admin', 'manager'],
+    requiredData: []
+  },
+  {
+    fromStatus: 'LOT_ALLOTMENT',
+    toStatus: 'LOT_SELECTION',
+    allowedRoles: ['staff', 'quality_supervisor', 'physical_supervisor', 'paddy_supervisor', 'admin', 'manager'],
     requiredData: []
   },
   {
